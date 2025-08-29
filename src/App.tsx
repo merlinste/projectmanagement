@@ -170,7 +170,8 @@ function Login() {
       </div>
     </div>
   );
-  // zusätzlich zum Magic-Link:
+}
+// zusätzlich zum Magic-Link:
 <button
   type="button"
   className="w-full rounded-xl px-3 py-2 border"
@@ -187,9 +188,6 @@ function Login() {
 >
   Mit Microsoft anmelden
 </button>
-
-}
-
 // ====== DATA HELPERS ======
 async function fetchProjects(): Promise<Project[]> {
   const { data, error } = await supabase
