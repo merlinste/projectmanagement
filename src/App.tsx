@@ -170,6 +170,24 @@ function Login() {
       </div>
     </div>
   );
+  // zusätzlich zum Magic-Link:
+<button
+  type="button"
+  className="w-full rounded-xl px-3 py-2 border"
+  onClick={async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "azure",
+      options: {
+        scopes: "email",             // wichtig: E-Mail anfordern
+        redirectTo: window.location.origin, // nach Login hierher zurück
+      },
+    });
+    if (error) alert(error.message);
+  }}
+>
+  Mit Microsoft anmelden
+</button>
+
 }
 
 // ====== DATA HELPERS ======
