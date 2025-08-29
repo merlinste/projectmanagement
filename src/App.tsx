@@ -20,7 +20,7 @@ export type Project = {
     | "abgeschlossen";
   notes: string | null;
   created_at: string;
-  // NEW: Kundendaten & Planung
+  // Kundendaten & Planung
   customer_name?: string | null;
   customer_phone?: string | null;
   customer_email?: string | null;
@@ -136,7 +136,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 function Login() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
-  const onSubmit = async (e: React.FormEvent) => {
+
+  const onMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     const { error } = await supabase.auth.signInWithOtp({
       email,
@@ -145,6 +146,18 @@ function Login() {
     if (error) alert(error.message);
     else setSent(true);
   };
+
+  const onMicrosoft = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "azure",
+      options: {
+        scopes: "openid profile email offline_access",
+        redirectTo: window.location.origin
+      }
+    });
+    if (error) alert(error.message);
+  };
+
   return (
     <div className="min-h-screen grid place-items-center p-4">
       <div className="w-full max-w-md bg-white rounded-2xl shadow p-6">
@@ -155,39 +168,36 @@ function Login() {
         {sent ? (
           <p>Magic-Link versendet. Bitte Posteingang prüfen.</p>
         ) : (
-          <form onSubmit={onSubmit} className="space-y-3">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="E-Mail-Adresse"
-              className="w-full border rounded-xl px-3 py-2"
-              required
-            />
-            <button className="w-full rounded-xl px-3 py-2 bg-blue-600 text-white">Link zusenden</button>
-          </form>
+          <>
+            <form onSubmit={onMagicLink} className="space-y-3 mb-4">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="E-Mail-Adresse"
+                className="w-full border rounded-xl px-3 py-2"
+                required
+              />
+              <button className="w-full rounded-xl px-3 py-2 bg-blue-600 text-white">Link zusenden</button>
+            </form>
+            <div className="relative flex items-center justify-center my-2">
+              <div className="h-px bg-slate-200 w-full" />
+              <span className="absolute bg-white px-2 text-xs text-slate-500">oder</span>
+            </div>
+            <button
+              type="button"
+              className="w-full rounded-xl px-3 py-2 border hover:bg-slate-50"
+              onClick={onMicrosoft}
+            >
+              Mit Microsoft anmelden
+            </button>
+          </>
         )}
       </div>
     </div>
   );
 }
-// zusätzlich zum Magic-Link:
-<button
-  type="button"
-  className="w-full rounded-xl px-3 py-2 border"
-  onClick={async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "azure",
-      options: {
-        scopes: "email",             // wichtig: E-Mail anfordern
-        redirectTo: window.location.origin, // nach Login hierher zurück
-      },
-    });
-    if (error) alert(error.message);
-  }}
->
-  Mit Microsoft anmelden
-</button>
+
 // ====== DATA HELPERS ======
 async function fetchProjects(): Promise<Project[]> {
   const { data, error } = await supabase
@@ -247,7 +257,7 @@ async function fetchDocuments(projectId: string): Promise<DocumentRow[]> {
 }
 async function uploadDocument(projectId: string, category: DocumentCategory, file: File) {
   const safe = sanitizeFileName(file.name);
-  const unique = `${Date.now()}-${crypto.randomUUID()}`;
+  const unique = `${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
   const path = `${projectId}/${category}/${unique}-${safe}`;
   const { error: upErr } = await supabase.storage
     .from("project-files")
