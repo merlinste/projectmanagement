@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient, SupabaseClient, Session } from "@supabase/supabase-js";
 
-// ====== CONFIG (ENV) ======
+// ====== ENV / SUPABASE CLIENT ======
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON);
@@ -9,11 +9,25 @@ const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON);
 // ====== TYPES ======
 export type Project = {
   id: string;
-  code: string;
-  name: string;
-  status: "planung" | "angebot" | "bestellt" | "montage" | "inbetriebnahme" | "abgeschlossen";
+  code: string; // z. B. 2025-0007
+  name: string; // Kunden-/Projektname
+  status:
+    | "planung"
+    | "angebot"
+    | "bestellt"
+    | "montage"
+    | "inbetriebnahme"
+    | "abgeschlossen";
   notes: string | null;
   created_at: string;
+  // NEW: Kundendaten & Planung
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
+  customer_address?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  planned_hours?: number | null;
 };
 
 export type DocumentCategory =
@@ -30,17 +44,32 @@ export type DocumentRow = {
   project_id: string;
   category: DocumentCategory;
   filename: string;
-  storage_path: string;
-  file_url: string | null;
+  storage_path: string; // <project_id>/<category>/<unique>-<name>
+  file_url: string | null; // signed URL
   uploaded_at: string;
 };
 
 export type TimeEntry = {
   id: string;
   project_id: string;
-  work_date: string;
+  work_date: string; // ISO date
   hours: number;
   description: string | null;
+  created_at: string;
+};
+
+export type Part = {
+  id: string;
+  project_id: string;
+  name: string;
+  qty: number;
+  supplier: string | null;
+  purchase_price: number | null;
+  sale_price: number | null;
+  ordered: boolean;
+  delivered: boolean;
+  installed: boolean;
+  notes: string | null;
   created_at: string;
 };
 
@@ -72,9 +101,16 @@ function formatDate(d?: string) {
   const dt = new Date(d);
   return dt.toLocaleDateString("de-DE");
 }
+function sanitizeFileName(name: string) {
+  const noMarks = name.normalize("NFKD").replace(/\p{M}+/gu, "");
+  return noMarks
+    .replace(/[^a-zA-Z0-9._ -]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/[-–—]+/g, "-")
+    .toLowerCase();
+}
 async function signedUrl(path: string) {
-  const { data, error } = await supabase.storage.from("project-files").createSignedUrl(path, 3600);
-  if (error) return null;
+  const { data } = await supabase.storage.from("project-files").createSignedUrl(path, 3600);
   return data?.signedUrl ?? null;
 }
 
@@ -82,36 +118,17 @@ async function signedUrl(path: string) {
 function AuthGate({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
-  const urlOk = Boolean(SUPABASE_URL && SUPABASE_ANON);
 
   useEffect(() => {
-    if (!urlOk) {
-      setLoading(false);
-      setSession(null);
-      return;
-    }
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setLoading(false);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, sess) => setSession(sess));
     return () => sub.subscription.unsubscribe();
-  }, [urlOk]);
+  }, []);
 
   if (loading) return <div className="p-6">Lade…</div>;
-
-  if (!urlOk)
-    return (
-      <div className="p-6 max-w-xl">
-        <h1 className="text-2xl font-semibold">Stellwag Klimatechnik – Projekte</h1>
-        <p className="mt-3">
-          Supabase-Variablen fehlen. Bitte <code>VITE_SUPABASE_URL</code> und{" "}
-          <code>VITE_SUPABASE_ANON_KEY</code> setzen (siehe README).
-        </p>
-        {children}
-      </div>
-    );
-
   if (!session) return <Login />;
   return <>{children}</>;
 }
@@ -159,7 +176,9 @@ function Login() {
 async function fetchProjects(): Promise<Project[]> {
   const { data, error } = await supabase
     .from("projects")
-    .select("id, code, name, status, notes, created_at")
+    .select(
+      "id, code, name, status, notes, created_at, customer_name, customer_phone, customer_email, customer_address, start_date, end_date, planned_hours"
+    )
     .order("created_at", { ascending: false });
   if (error) throw error;
   return data as Project[];
@@ -177,6 +196,29 @@ async function updateProjectStatus(id: string, status: Project["status"]) {
   const { error } = await supabase.from("projects").update({ status }).eq("id", id);
   if (error) throw error;
 }
+async function updateProjectMeta(id: string, patch: Partial<Project>) {
+  const allowed = (({
+    customer_name,
+    customer_phone,
+    customer_email,
+    customer_address,
+    start_date,
+    end_date,
+    planned_hours
+  }) => ({
+    customer_name,
+    customer_phone,
+    customer_email,
+    customer_address,
+    start_date,
+    end_date,
+    planned_hours
+  }))(patch as any);
+  const { data, error } = await supabase.from("projects").update(allowed).eq("id", id).select().single();
+  if (error) throw error;
+  return data as Project;
+}
+
 async function fetchDocuments(projectId: string): Promise<DocumentRow[]> {
   const { data, error } = await supabase
     .from("documents")
@@ -185,16 +227,15 @@ async function fetchDocuments(projectId: string): Promise<DocumentRow[]> {
     .order("uploaded_at", { ascending: false });
   if (error) throw error;
   const rows = (data as DocumentRow[]) || [];
-  return Promise.all(
-    rows.map(async (d) => ({ ...d, file_url: await signedUrl(d.storage_path) }))
-  );
+  return Promise.all(rows.map(async (d) => ({ ...d, file_url: await signedUrl(d.storage_path) })));
 }
 async function uploadDocument(projectId: string, category: DocumentCategory, file: File) {
-  const path = `${projectId}/${category}/${Date.now()}_${file.name}`;
-  const { error: upErr } = await supabase.storage.from("project-files").upload(path, file, {
-    cacheControl: "3600",
-    upsert: false
-  });
+  const safe = sanitizeFileName(file.name);
+  const unique = `${Date.now()}-${crypto.randomUUID()}`;
+  const path = `${projectId}/${category}/${unique}-${safe}`;
+  const { error: upErr } = await supabase.storage
+    .from("project-files")
+    .upload(path, file, { cacheControl: "3600", upsert: false, contentType: file.type || undefined });
   if (upErr) throw upErr;
   const { data, error } = await supabase
     .from("documents")
@@ -204,6 +245,11 @@ async function uploadDocument(projectId: string, category: DocumentCategory, fil
   if (error) throw error;
   return data as DocumentRow;
 }
+async function deleteDocumentRow(doc: DocumentRow) {
+  await supabase.storage.from("project-files").remove([doc.storage_path]);
+  await supabase.from("documents").delete().eq("id", doc.id);
+}
+
 async function fetchTime(projectId: string): Promise<TimeEntry[]> {
   const { data, error } = await supabase
     .from("time_entries")
@@ -216,12 +262,67 @@ async function fetchTime(projectId: string): Promise<TimeEntry[]> {
 async function addTime(projectId: string, entry: { work_date: string; hours: number; description?: string }) {
   const { error } = await supabase
     .from("time_entries")
-    .insert({
-      project_id: projectId,
-      work_date: entry.work_date,
-      hours: entry.hours,
-      description: entry.description ?? null
-    });
+    .insert({ project_id: projectId, work_date: entry.work_date, hours: entry.hours, description: entry.description ?? null });
+  if (error) throw error;
+}
+async function deleteTimeEntry(id: string) {
+  const { error } = await supabase.from("time_entries").delete().eq("id", id);
+  if (error) throw error;
+}
+
+async function fetchParts(projectId: string): Promise<Part[]> {
+  const { data, error } = await supabase
+    .from("project_parts")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data as Part[];
+}
+async function addPart(projectId: string, p: Partial<Part>) {
+  const { data, error } = await supabase
+    .from("project_parts")
+    .insert({ project_id: projectId, ...p, qty: p.qty ?? 1 })
+    .select()
+    .single();
+  if (error) throw error;
+  return data as Part;
+}
+async function updatePart(id: string, patch: Partial<Part>) {
+  const { error } = await supabase.from("project_parts").update(patch).eq("id", id);
+  if (error) throw error;
+}
+async function deletePart(id: string) {
+  const { error } = await supabase.from("project_parts").delete().eq("id", id);
+  if (error) throw error;
+}
+
+async function deleteProjectFull(project: Project) {
+  // Storage: alle Kategorien durchgehen und Dateien entfernen
+  const cats: DocumentCategory[] = [
+    "angebot",
+    "einkauf",
+    "stundenzettel",
+    "inbetriebnahme",
+    "rechnung",
+    "fotos",
+    "sonstiges"
+  ];
+  for (const c of cats) {
+    let offset = 0;
+    while (true) {
+      const { data, error } = await supabase.storage
+        .from("project-files")
+        .list(`${project.id}/${c}`, { limit: 100, offset });
+      if (error || !data || data.length === 0) break;
+      const keys = data.map((o) => `${project.id}/${c}/${o.name}`);
+      await supabase.storage.from("project-files").remove(keys);
+      if (data.length < 100) break;
+      offset += 100;
+    }
+  }
+  // DB: dank ON DELETE CASCADE werden Kinder (documents/time_entries/parts) mitgelöscht
+  const { error } = await supabase.from("projects").delete().eq("id", project.id);
   if (error) throw error;
 }
 
@@ -455,11 +556,7 @@ function StatusBadge({ value }: { value: Project["status"] }) {
     inbetriebnahme: "bg-emerald-100 text-emerald-800",
     abgeschlossen: "bg-green-100 text-green-800"
   };
-  return (
-    <span className={clsx("px-2 py-1 rounded-full text-xs", map[value])}>
-      {STATUS_LABEL[value]}
-    </span>
-  );
+  return <span className={clsx("px-2 py-1 rounded-full text-xs", map[value])}>{STATUS_LABEL[value]}</span>;
 }
 
 function ProjectDetail({
@@ -471,7 +568,7 @@ function ProjectDetail({
   onBack: () => void;
   onProjectUpdated: (p: Project) => void;
 }) {
-  const [active, setActive] = useState<"overview" | "docs" | "time">("overview");
+  const [active, setActive] = useState<"overview" | "details" | "docs" | "parts" | "time">("overview");
   const [status, setStatus] = useState<Project["status"]>(project.status);
   useEffect(() => setStatus(project.status), [project.id]);
 
@@ -487,9 +584,22 @@ function ProjectDetail({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <button className="text-sm underline" onClick={onBack}>
-          Zurück zur Übersicht
-        </button>
+        <div className="flex items-center gap-3">
+          <button className="text-sm underline" onClick={onBack}>
+            Zurück zur Übersicht
+          </button>
+          <button
+            className="text-red-600 underline"
+            onClick={async () => {
+              if (confirm(`Projekt ${project.code} wirklich löschen?`)) {
+                await deleteProjectFull(project);
+                onBack();
+              }
+            }}
+          >
+            Projekt löschen
+          </button>
+        </div>
         <div className="text-right">
           <div className="text-2xl font-semibold">{project.name}</div>
           <div className="text-slate-500">Projekt {project.code}</div>
@@ -501,8 +611,14 @@ function ProjectDetail({
           <TabButton active={active === "overview"} onClick={() => setActive("overview")}>
             Übersicht
           </TabButton>
+          <TabButton active={active === "details"} onClick={() => setActive("details")}>
+            Details
+          </TabButton>
           <TabButton active={active === "docs"} onClick={() => setActive("docs")}>
             Dokumente
+          </TabButton>
+          <TabButton active={active === "parts"} onClick={() => setActive("parts")}>
+            Teile
           </TabButton>
           <TabButton active={active === "time"} onClick={() => setActive("time")}>
             Stunden
@@ -536,7 +652,14 @@ function ProjectDetail({
               </div>
             </div>
           )}
+          {active === "details" && (
+            <DetailsPanel
+              project={project}
+              onSaved={(p) => onProjectUpdated(p)}
+            />
+          )}
           {active === "docs" && <DocumentsPanel projectId={project.id} />}
+          {active === "parts" && <PartsPanel projectId={project.id} />}
           {active === "time" && <TimePanel projectId={project.id} />}
         </div>
       </div>
@@ -563,6 +686,60 @@ function TabButton({
   );
 }
 
+function DetailsPanel({ project, onSaved }: { project: Project; onSaved: (p: Project) => void }) {
+  const [form, setForm] = useState({
+    customer_name: project.customer_name || "",
+    customer_phone: project.customer_phone || "",
+    customer_email: project.customer_email || "",
+    customer_address: project.customer_address || "",
+    start_date: project.start_date || "",
+    end_date: project.end_date || "",
+    planned_hours: project.planned_hours ?? ""
+  });
+  const onChange = (k: keyof typeof form, v: any) => setForm((f) => ({ ...f, [k]: v }));
+  const save = async () => {
+    try {
+      const p = await updateProjectMeta(project.id, {
+        ...form,
+        planned_hours: form.planned_hours === "" ? null : Number(form.planned_hours)
+      } as any);
+      onSaved(p);
+      alert("Gespeichert");
+    } catch (e: any) {
+      alert(e.message || "Fehler beim Speichern");
+    }
+  };
+  return (
+    <div className="grid md:grid-cols-2 gap-6">
+      <div className="space-y-2">
+        <div className="text-sm text-slate-600">Kunde</div>
+        <input className="border rounded-xl px-3 py-2 w-full" placeholder="Name"
+          value={form.customer_name} onChange={(e) => onChange("customer_name", e.target.value)} />
+        <input className="border rounded-xl px-3 py-2 w-full" placeholder="Telefon"
+          value={form.customer_phone} onChange={(e) => onChange("customer_phone", e.target.value)} />
+        <input className="border rounded-xl px-3 py-2 w-full" placeholder="E-Mail"
+          value={form.customer_email} onChange={(e) => onChange("customer_email", e.target.value)} />
+        <textarea className="border rounded-xl px-3 py-2 w-full" placeholder="Adresse"
+          value={form.customer_address} onChange={(e) => onChange("customer_address", e.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <div className="text-sm text-slate-600">Zeitplanung</div>
+        <div className="grid grid-cols-2 gap-3">
+          <input type="date" className="border rounded-xl px-3 py-2"
+            value={form.start_date || ""} onChange={(e) => onChange("start_date", e.target.value)} />
+          <input type="date" className="border rounded-xl px-3 py-2"
+            value={form.end_date || ""} onChange={(e) => onChange("end_date", e.target.value)} />
+        </div>
+        <input type="number" step="0.25" min="0" className="border rounded-xl px-3 py-2"
+          placeholder="geplante Arbeitszeit (Std.)"
+          value={form.planned_hours as any}
+          onChange={(e) => onChange("planned_hours", e.target.value)} />
+        <button className="rounded-xl px-4 py-2 bg-blue-600 text-white" onClick={save}>Speichern</button>
+      </div>
+    </div>
+  );
+}
+
 function DocumentsPanel({ projectId }: { projectId: string }) {
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -572,26 +749,25 @@ function DocumentsPanel({ projectId }: { projectId: string }) {
   const load = async () => {
     setLoading(true);
     try {
-      const data = await fetchDocuments(projectId);
-      setDocs(data);
+      setDocs(await fetchDocuments(projectId));
     } catch (e: any) {
       alert(e.message || "Fehler beim Laden");
     } finally {
       setLoading(false);
     }
   };
-  useEffect(() => {
-    load();
-  }, [projectId]);
+  useEffect(() => void load(), [projectId]);
 
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
     setUploading(true);
     try {
-      const d = await uploadDocument(projectId, cat, file);
-      const url = await signedUrl(d.storage_path);
-      setDocs((xs) => [{ ...(d as any), file_url: url }, ...xs]);
+      for (const f of files) {
+        const d = await uploadDocument(projectId, cat, f);
+        const url = await signedUrl(d.storage_path);
+        setDocs((xs) => [{ ...(d as any), file_url: url }, ...xs]);
+      }
     } catch (e: any) {
       alert(e.message || "Upload fehlgeschlagen");
     } finally {
@@ -619,7 +795,7 @@ function DocumentsPanel({ projectId }: { projectId: string }) {
           <div className="rounded-xl bg-blue-600 text-white px-3 py-1.5 text-sm cursor-pointer">
             Datei hochladen
           </div>
-          <input type="file" className="hidden" onChange={onUpload} disabled={uploading} />
+          <input type="file" className="hidden" onChange={onUpload} disabled={uploading} multiple />
         </label>
 
         <button className="md:ml-auto underline text-sm" onClick={load}>
@@ -653,12 +829,10 @@ function DocumentsPanel({ projectId }: { projectId: string }) {
             ) : (
               docs.map((d) => (
                 <tr key={d.id} className="border-t">
-                  <td className="p-3">
-                    {DOC_CATEGORIES.find((c) => c.key === d.category)?.label || d.category}
-                  </td>
+                  <td className="p-3">{DOC_CATEGORIES.find((c) => c.key === d.category)?.label || d.category}</td>
                   <td className="p-3">{d.filename}</td>
                   <td className="p-3">{formatDate(d.uploaded_at)}</td>
-                  <td className="p-3 text-right">
+                  <td className="p-3 text-right flex gap-3 justify-end">
                     {d.file_url ? (
                       <a className="text-blue-600 underline" href={d.file_url} target="_blank" rel="noreferrer">
                         Öffnen
@@ -666,11 +840,177 @@ function DocumentsPanel({ projectId }: { projectId: string }) {
                     ) : (
                       <span className="text-slate-400">kein Link</span>
                     )}
+                    <button
+                      className="text-red-600 underline"
+                      onClick={async () => {
+                        if (confirm("Dokument löschen?")) {
+                          await deleteDocumentRow(d);
+                          setDocs((xs) => xs.filter((x) => x.id !== d.id));
+                        }
+                      }}
+                    >
+                      Löschen
+                    </button>
                   </td>
                 </tr>
               ))
             )}
           </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PartsPanel({ projectId }: { projectId: string }) {
+  const [rows, setRows] = useState<Part[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ name: "", qty: 1, supplier: "", purchase_price: "", sale_price: "" });
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      setRows(await fetchParts(projectId));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => void load(), [projectId]);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const rec = await addPart(projectId, {
+      name: form.name,
+      qty: Number(form.qty) || 1,
+      supplier: form.supplier || null,
+      purchase_price: form.purchase_price ? Number(form.purchase_price) : null,
+      sale_price: form.sale_price ? Number(form.sale_price) : null
+    });
+    setRows((xs) => [rec, ...xs]);
+    setForm({ name: "", qty: 1, supplier: "", purchase_price: "", sale_price: "" });
+  };
+
+  const sumPurchase = rows.reduce((s, r) => s + (Number(r.purchase_price || 0) * Number(r.qty || 1)), 0);
+  const sumSale = rows.reduce((s, r) => s + (Number(r.sale_price || 0) * Number(r.qty || 1)), 0);
+
+  const toggle = async (row: Part, key: "ordered" | "delivered" | "installed") => {
+    const next = { ...row, [key]: !row[key] } as Part;
+    setRows((xs) => xs.map((x) => (x.id === row.id ? next : x)));
+    await updatePart(row.id, { [key]: next[key] } as any);
+  };
+
+  return (
+    <div className="space-y-4">
+      <form onSubmit={add} className="grid md:grid-cols-6 gap-3 bg-slate-50 p-3 rounded-2xl">
+        <input
+          className="border rounded-xl px-3 py-2 md:col-span-2"
+          placeholder="Teil / Bezeichnung"
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          required
+        />
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          className="border rounded-xl px-3 py-2"
+          placeholder="Menge"
+          value={form.qty}
+          onChange={(e) => setForm({ ...form, qty: Number(e.target.value) })}
+        />
+        <input
+          className="border rounded-xl px-3 py-2"
+          placeholder="Bezugsquelle"
+          value={form.supplier}
+          onChange={(e) => setForm({ ...form, supplier: e.target.value })}
+        />
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          className="border rounded-xl px-3 py-2"
+          placeholder="EK"
+          value={form.purchase_price}
+          onChange={(e) => setForm({ ...form, purchase_price: e.target.value })}
+        />
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          className="border rounded-xl px-3 py-2"
+          placeholder="VK"
+          value={form.sale_price}
+          onChange={(e) => setForm({ ...form, sale_price: e.target.value })}
+        />
+        <button className="rounded-xl px-4 py-2 bg-blue-600 text-white">Hinzufügen</button>
+      </form>
+
+      <div className="border rounded-2xl overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="p-3 text-left">Teil</th>
+              <th className="p-3 text-left">Menge</th>
+              <th className="p-3 text-left">Bezugsquelle</th>
+              <th className="p-3 text-left">EK</th>
+              <th className="p-3 text-left">VK</th>
+              <th className="p-3 text-left">Bestellt</th>
+              <th className="p-3 text-left">Geliefert</th>
+              <th className="p-3 text-left">Montiert</th>
+              <th className="p-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td className="p-4" colSpan={9}>
+                  Lädt…
+                </td>
+              </tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td className="p-4" colSpan={9}>
+                  Noch keine Teile.
+                </td>
+              </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={r.id} className="border-t">
+                  <td className="p-3">{r.name}</td>
+                  <td className="p-3">{r.qty}</td>
+                  <td className="p-3">{r.supplier}</td>
+                  <td className="p-3">{r.purchase_price ?? ""}</td>
+                  <td className="p-3">{r.sale_price ?? ""}</td>
+                  <td className="p-3"><input type="checkbox" checked={r.ordered} onChange={() => toggle(r, "ordered")} /></td>
+                  <td className="p-3"><input type="checkbox" checked={r.delivered} onChange={() => toggle(r, "delivered")} /></td>
+                  <td className="p-3"><input type="checkbox" checked={r.installed} onChange={() => toggle(r, "installed")} /></td>
+                  <td className="p-3 text-right">
+                    <button
+                      className="text-red-600 underline"
+                      onClick={async () => {
+                        if (confirm("Teil löschen?")) {
+                          await deletePart(r.id);
+                          setRows((xs) => xs.filter((x) => x.id !== r.id));
+                        }
+                      }}
+                    >
+                      Löschen
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+          <tfoot>
+            <tr className="border-t bg-slate-50">
+              <td className="p-3 font-medium" colSpan={3}>
+                Summe
+              </td>
+              <td className="p-3 font-medium">{sumPurchase.toFixed(2)}</td>
+              <td className="p-3 font-medium">{sumSale.toFixed(2)}</td>
+              <td colSpan={4}></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -683,15 +1023,12 @@ function TimePanel({ projectId }: { projectId: string }) {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [hours, setHours] = useState(1);
   const [desc, setDesc] = useState("");
-  const total = useMemo(() => entries.reduce((sum, e) => sum + (Number(e.hours) || 0), 0), [entries]);
+  const total = useMemo(() => entries.reduce((s, e) => s + (Number(e.hours) || 0), 0), [entries]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const data = await fetchTime(projectId);
-      setEntries(data);
-    } catch (e: any) {
-      alert(e.message || "Fehler beim Laden");
+      setEntries(await fetchTime(projectId));
     } finally {
       setLoading(false);
     }
@@ -700,25 +1037,16 @@ function TimePanel({ projectId }: { projectId: string }) {
 
   const onAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      await addTime(projectId, { work_date: date, hours: Number(hours), description: desc });
-      setDesc("");
-      setHours(1);
-      await load();
-    } catch (e: any) {
-      alert(e.message || "Fehler beim Speichern");
-    }
+    await addTime(projectId, { work_date: date, hours: Number(hours), description: desc });
+    setDesc("");
+    setHours(1);
+    await load();
   };
 
   return (
     <div className="space-y-4">
       <form onSubmit={onAdd} className="grid md:grid-cols-5 gap-3 bg-slate-50 p-3 rounded-2xl">
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="border rounded-xl px-3 py-2"
-        />
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="border rounded-xl px-3 py-2" />
         <input
           type="number"
           step="0.25"
@@ -744,18 +1072,19 @@ function TimePanel({ projectId }: { projectId: string }) {
               <th className="text-left p-3">Datum</th>
               <th className="text-left p-3">Stunden</th>
               <th className="text-left p-3">Beschreibung</th>
+              <th className="p-3"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td className="p-4" colSpan={3}>
+                <td className="p-4" colSpan={4}>
                   Lädt…
                 </td>
               </tr>
             ) : entries.length === 0 ? (
               <tr>
-                <td className="p-4" colSpan={3}>
+                <td className="p-4" colSpan={4}>
                   Keine Einträge vorhanden.
                 </td>
               </tr>
@@ -765,6 +1094,19 @@ function TimePanel({ projectId }: { projectId: string }) {
                   <td className="p-3">{formatDate(e.work_date)}</td>
                   <td className="p-3">{e.hours}</td>
                   <td className="p-3">{e.description}</td>
+                  <td className="p-3 text-right">
+                    <button
+                      className="text-red-600 underline"
+                      onClick={async () => {
+                        if (confirm("Eintrag löschen?")) {
+                          await deleteTimeEntry(e.id);
+                          setEntries((xs) => xs.filter((x) => x.id !== e.id));
+                        }
+                      }}
+                    >
+                      Löschen
+                    </button>
+                  </td>
                 </tr>
               ))
             )}
@@ -773,6 +1115,7 @@ function TimePanel({ projectId }: { projectId: string }) {
             <tr className="border-t bg-slate-50">
               <td className="p-3 font-medium">Summe</td>
               <td className="p-3 font-medium">{total.toFixed(2)}</td>
+              <td></td>
               <td></td>
             </tr>
           </tfoot>
