@@ -33,10 +33,14 @@ export type Project = {
   status: ProjectStatus;
   notes: string | null;
   created_at: string;
+  customer_address?: string | null;
+  customer_email?: string | null;
+  customer_phone?: string | null;
   // Profit inputs
   quote_total_net?: number | null;        // Angebotssumme netto
   invoiced_total_net?: number | null;     // tatsächlich abgerechnet netto (optional)
   hourly_rate?: number | null;            // Standard-Satz
+  
 };
 
 export type DocumentCategory =
@@ -219,7 +223,7 @@ async function fetchProjects(): Promise<Project[]> {
   const { data, error } = await supabase
     .from("projects")
     .select(
-      "id, code, name, status, notes, created_at, quote_total_net, invoiced_total_net, hourly_rate"
+      "id, code, name, status, notes, created_at, quote_total_net, invoiced_total_net, hourly_rate, customer_address, customer_email, customer_phone"
     )
     .order("created_at", { ascending: false });
   if (error) throw error;
