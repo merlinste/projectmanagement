@@ -1,397 +1,169 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { createClient, SupabaseClient, Session } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-// ================= ENV / SUPABASE =================
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
-const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-export const VAT_RATE = Number(import.meta.env.VITE_VAT_RATE ?? 0.19);
-export const DEFAULT_HOURLY = Number(import.meta.env.VITE_DEFAULT_HOURLY_RATE ?? 65);
+// ---- Supabase Client --------------------------------------------------------
+// Falls du bereits einen Client in z.B. ./lib/supabaseClient exportierst,
+// kannst du die beiden Zeilen unten auskommentieren und stattdessen importieren:
+//   import { supabase } from "./lib/supabaseClient"
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey);
 
-const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-    flowType: "pkce",
-  },
-});
-
-// ================= TYPES =================
-export type ProjectStatus =
-  | "planung"
-  | "angebot"
-  | "bestellt"
-  | "montage"
-  | "inbetriebnahme"
-  | "abgerechnet"
-  | "storniert";
-
+// ---- Typen ------------------------------------------------------------------
 export type Project = {
   id: string;
-  code: string; // e.g. 2025-0007
+  code: string;
   name: string;
-  status: ProjectStatus;
+  status: string | null; // frei, damit dein bestehendes Enum/Union weiterhin passt
   notes: string | null;
   created_at: string;
 
-  // Kundendaten
-  customer_address?: string | null;
-  customer_email?: string | null;
-  customer_phone?: string | null;
-
-  // Profit inputs
-  quote_total_net?: number | null;        // Angebotssumme netto
-  invoiced_total_net?: number | null;     // tatsächlich abgerechnet netto (optional)
-  hourly_rate?: number | null;            // Standard-Satz
+  // Neu: Kundendaten
+  customer_address: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
 };
 
-export type DocumentCategory =
-  | "angebot"
-  | "einkauf"
-  | "inbetriebnahme"
-  | "rechnung"
-  | "fotos"
-  | "sonstiges";
-
-export type DocumentRow = {
-  id: string;
-  project_id: string;
-  category: DocumentCategory;
-  filename: string;
-  storage_path: string;
-  uploaded_at: string;
-  file_url: string | null;
-};
-
-export type TimeEntry = {
-  id: string;
-  project_id: string;
-  work_date: string; // YYYY-MM-DD
-  hours: number;
-  description: string | null;
-  worker_name: string | null;
-  created_at: string;
-};
-
-export type Part = {
-  id: string;
-  project_id: string;
+type NewProject = {
+  code: string;
   name: string;
-  qty: number;
-  supplier: string | null;
-  purchase_price_net: number | null; // EK netto / Einheit
-  sale_price_net: number | null;     // VK netto / Einheit (optional)
-  shipping_cost_net: number | null;  // Versand netto (pro Position)
-  ordered: boolean;
-  delivered: boolean;
-  installed: boolean;
+  status: string | null;
   notes: string | null;
-  created_at: string;
 };
 
-export type Task = {
-  id: string;
-  project_id: string;
-  title: string;
-  due_date: string | null; // YYYY-MM-DD
-  done: boolean;
-  notes: string | null;
-  created_at: string;
+// ---- Hilfen -----------------------------------------------------------------
+const formatDate = (iso: string | null | undefined) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleDateString();
 };
 
-const DOC_CATEGORIES: { key: DocumentCategory; label: string }[] = [
-  { key: "angebot", label: "Angebot" },
-  { key: "einkauf", label: "Einkauf (Material/Ware)" },
-  { key: "inbetriebnahme", label: "Inbetriebnahme-Protokoll" },
-  { key: "rechnung", label: "Rechnung" },
-  { key: "fotos", label: "Fotos" },
-  { key: "sonstiges", label: "Sonstiges" },
-];
+// Du kannst hier deine bevorzugten Stati pflegen – frei wählbar
+const STATUS_OPTIONS = ["neu", "in_bearbeitung", "pausiert", "abgeschlossen"] as const;
 
-const STATUS_LABEL: Record<ProjectStatus, string> = {
-  planung: "Planung",
-  angebot: "Angebot",
-  bestellt: "Bestellt",
-  montage: "Montage",
-  inbetriebnahme: "Inbetriebnahme",
-  abgerechnet: "Abgerechnet",
-  storniert: "Storniert",
-};
-
-// ================= UTIL =================
-function clsx(...xs: Array<string | false | null | undefined>) {
-  return xs.filter(Boolean).join(" ");
-}
-function formatDate(d?: string | null) {
-  if (!d) return "–";
-  const dt = new Date(d);
-  return dt.toLocaleDateString("de-DE");
-}
-function sanitizeFileName(name: string) {
-  const noMarks = name.normalize("NFKD").replace(/\p{M}+/gu, "");
-  return noMarks
-    .replace(/[^a-zA-Z0-9._ -]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/[-–—]+/g, "-")
-    .toLowerCase();
-}
-const toNet = (value: number, mode: "netto" | "brutto") => (mode === "brutto" ? value / (1 + VAT_RATE) : value);
-const toGross = (net: number) => net * (1 + VAT_RATE);
-
-async function signedUrl(path: string) {
-  const { data } = await supabase.storage.from("project-files").createSignedUrl(path, 3600);
-  return data?.signedUrl ?? null;
-}
-
-// ================= AUTH =================
-function AuthGate({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setLoading(false);
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, sess) => setSession(sess));
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  if (loading) return <div className="p-6">Lade…</div>;
-  if (!session) return <Login />;
-  return <>{children}</>;
-}
-
-function Login() {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-
-  const onMagicLink = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
-    });
-    if (error) alert(error.message);
-    else setSent(true);
-  };
-
-  const onMicrosoft = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "azure",
-      options: { scopes: "openid profile email offline_access", redirectTo: window.location.origin },
-    });
-    if (error) alert(error.message);
-  };
-
-  return (
-    <div className="min-h-screen grid place-items-center p-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-10 h-10 rounded-full bg-blue-100 grid place-items-center">❄️</div>
-          <h1 className="text-xl">Stellwag Klimatechnik – Login</h1>
-        </div>
-        {sent ? (
-          <p>Magic-Link versendet. Bitte Posteingang prüfen.</p>
-        ) : (
-          <>
-            <form onSubmit={onMagicLink} className="space-y-3 mb-4">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="E-Mail-Adresse"
-                className="w-full border rounded-xl px-3 py-2"
-                required
-              />
-              <button className="w-full rounded-xl px-3 py-2 bg-blue-600 text-white">Link zusenden</button>
-            </form>
-            <div className="relative flex items-center justify-center my-2">
-              <div className="h-px bg-slate-200 w-full" />
-              <span className="absolute bg-white px-2 text-xs text-slate-500">oder</span>
-            </div>
-            <button type="button" className="w-full rounded-xl px-3 py-2 border hover:bg-slate-50" onClick={onMicrosoft}>
-              Mit Microsoft anmelden
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ================= DATA HELPERS =================
+// ---- Datenfunktionen --------------------------------------------------------
 async function fetchProjects(): Promise<Project[]> {
   const { data, error } = await supabase
     .from("projects")
     .select(
-      "id, code, name, status, notes, created_at, quote_total_net, invoiced_total_net, hourly_rate, customer_address, customer_email, customer_phone"
+      `
+      id, code, name, status, notes, created_at,
+      customer_address, customer_email, customer_phone
+    `
     )
     .order("created_at", { ascending: false });
+
   if (error) throw error;
-  return (data as any) as Project[];
+  // safety: cast – Supabase liefert die Felder typisch passend
+  return (data ?? []) as Project[];
 }
-async function createProject(payload: { name: string; notes?: string }) {
+
+async function insertProject(p: NewProject): Promise<Project> {
   const { data, error } = await supabase
     .from("projects")
-    .insert({ name: payload.name, notes: payload.notes ?? null })
-    .select()
+    .insert({
+      code: p.code,
+      name: p.name,
+      status: p.status,
+      notes: p.notes,
+    })
+    .select(
+      `
+      id, code, name, status, notes, created_at,
+      customer_address, customer_email, customer_phone
+    `
+    )
     .single();
+
   if (error) throw error;
   return data as Project;
 }
-async function updateProject(id: string, patch: Partial<Project>) {
-  const { data, error } = await supabase.from("projects").update(patch).eq("id", id).select().single();
+
+async function updateProject(id: string, patch: Partial<Project>): Promise<Project> {
+  const { data, error } = await supabase
+    .from("projects")
+    .update(patch)
+    .eq("id", id)
+    .select(
+      `
+      id, code, name, status, notes, created_at,
+      customer_address, customer_email, customer_phone
+    `
+    )
+    .single();
+
   if (error) throw error;
   return data as Project;
 }
-async function updateProjectStatus(id: string, status: ProjectStatus) {
-  const { error } = await supabase.from("projects").update({ status }).eq("id", id);
-  if (error) throw error;
-}
 
-async function fetchDocuments(projectId: string): Promise<DocumentRow[]> {
-  const { data, error } = await supabase
-    .from("documents")
-    .select("id, project_id, category, filename, storage_path, uploaded_at")
-    .eq("project_id", projectId)
-    .order("uploaded_at", { ascending: false });
-  if (error) throw error;
-  const rows = (data as DocumentRow[]) || [];
-  return Promise.all(rows.map(async (d) => ({ ...d, file_url: await signedUrl(d.storage_path) })));
-}
-async function uploadDocument(projectId: string, category: DocumentCategory, file: File) {
-  const safe = sanitizeFileName(file.name);
-  const unique = `${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
-  const path = `${projectId}/${category}/${unique}-${safe}`;
-  const { error: upErr } = await supabase.storage
-    .from("project-files")
-    .upload(path, file, { cacheControl: "3600", upsert: false, contentType: file.type || undefined });
-  if (upErr) throw upErr;
-  const { data, error } = await supabase
-    .from("documents")
-    .insert({ project_id: projectId, category, filename: file.name, storage_path: path })
-    .select()
-    .single();
-  if (error) throw error;
-  return data as DocumentRow;
-}
-async function deleteDocumentRow(doc: DocumentRow) {
-  await supabase.storage.from("project-files").remove([doc.storage_path]);
-  await supabase.from("documents").delete().eq("id", doc.id);
-}
-
-async function fetchTime(projectId: string): Promise<TimeEntry[]> {
-  const { data, error } = await supabase
-    .from("time_entries")
-    .select("id, project_id, work_date, hours, description, worker_name, created_at")
-    .eq("project_id", projectId)
-    .order("work_date", { ascending: false });
-  if (error) throw error;
-  return data as TimeEntry[];
-}
-async function addTime(projectId: string, entry: { work_date: string; hours: number; description?: string; worker_name?: string }) {
-  const { error } = await supabase
-    .from("time_entries")
-    .insert({ project_id: projectId, work_date: entry.work_date, hours: entry.hours, description: entry.description ?? null, worker_name: entry.worker_name ?? null });
-  if (error) throw error;
-}
-async function deleteTimeEntry(id: string) {
-  const { error } = await supabase.from("time_entries").delete().eq("id", id);
-  if (error) throw error;
-}
-
-async function fetchParts(projectId: string): Promise<Part[]> {
-  const { data, error } = await supabase
-    .from("project_parts")
-    .select("*")
-    .eq("project_id", projectId)
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return data as Part[];
-}
-async function addPart(projectId: string, p: Partial<Part>) {
-  const { data, error } = await supabase
-    .from("project_parts")
-    .insert({ project_id: projectId, ...p, qty: p.qty ?? 1 })
-    .select()
-    .single();
-  if (error) throw error;
-  return data as Part;
-}
-async function updatePart(id: string, patch: Partial<Part>) {
-  const { error } = await supabase.from("project_parts").update(patch).eq("id", id);
-  if (error) throw error;
-}
-async function deletePart(id: string) {
-  const { error } = await supabase.from("project_parts").delete().eq("id", id);
-  if (error) throw error;
-}
-
-async function fetchTasksAllProjects(): Promise<(Task & { project: Project })[]> {
-  const { data, error } = await supabase
-    .from("project_tasks")
-    .select("id, project_id, title, due_date, done, notes, created_at, projects:project_id(id, name, code, status)")
-    .order("due_date", { ascending: true });
-  if (error) throw error;
-  return (data as any).map((x: any) => ({ ...x, project: x.projects })) as any;
-}
-async function fetchTasks(projectId: string): Promise<Task[]> {
-  const { data, error } = await supabase
-    .from("project_tasks")
-    .select("*")
-    .eq("project_id", projectId)
-    .order("due_date", { ascending: true });
-  if (error) throw error;
-  return data as Task[];
-}
-async function addTask(projectId: string, t: { title: string; due_date?: string | null; notes?: string | null }) {
-  const { data, error } = await supabase
-    .from("project_tasks")
-    .insert({ project_id: projectId, title: t.title, due_date: t.due_date ?? null, notes: t.notes ?? null })
-    .select()
-    .single();
-  if (error) throw error;
-  return data as Task;
-}
-async function updateTask(id: string, patch: Partial<Task>) {
-  const { error } = await supabase.from("project_tasks").update(patch).eq("id", id);
-  if (error) throw error;
-}
-async function deleteTask(id: string) {
-  const { error } = await supabase.from("project_tasks").delete().eq("id", id);
-  if (error) throw error;
-}
-
-// ================= UI ROOT =================
+// ---- App-Komponente ---------------------------------------------------------
 export default function App() {
-  return (
-    <AuthGate>
-      <Shell />
-    </AuthGate>
-  );
-}
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
-function Shell() {
-  const [view, setView] = useState<"list" | "detail">("list");
-  const [selected, setSelected] = useState<Project | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        setLoading(true);
+        const data = await fetchProjects();
+        if (mounted) setProjects(data);
+      } catch (e: any) {
+        console.error(e);
+        setErrorMsg(e?.message ?? "Unbekannter Fehler beim Laden der Projekte.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const selectedProject = useMemo(
+    () => projects.find((p) => p.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId]
+  );
+
+  const handleCreated = (p: Project) => {
+    setProjects((prev) => [p, ...prev]);
+  };
+
+  const handleUpdated = (p: Project) => {
+    setProjects((prev) => prev.map((x) => (x.id === p.id ? p : x)));
+  };
+
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-6xl mx-auto p-4 md:p-6">
-        {view === "list" && (
-          <ProjectList
-            onOpen={(p) => {
-              setSelected(p);
-              setView("detail");
-            }}
-          />
+    <div className="min-h-dvh bg-slate-50 text-slate-900">
+      <header className="sticky top-0 z-10 bg-white/75 backdrop-blur border-b border-slate-200">
+        <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+          <h1 className="text-lg md:text-xl font-medium">Stellwag PM</h1>
+          <div className="text-sm text-slate-500">Projektmanagement</div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-6">
+        {errorMsg && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {errorMsg}
+          </div>
         )}
-        {view === "detail" && selected && (
+
+        {selectedProject ? (
           <ProjectDetail
-            project={selected}
-            onBack={() => setView("list")}
-            onProjectUpdated={(p) => setSelected(p)}
+            key={selectedProject.id}
+            project={selectedProject}
+            onBack={() => setSelectedProjectId(null)}
+            onProjectUpdated={handleUpdated}
+          />
+        ) : (
+          <HomeDashboard
+            projects={projects}
+            loading={loading}
+            onSelect={(id) => setSelectedProjectId(id)}
+            onCreated={handleCreated}
           />
         )}
       </main>
@@ -399,358 +171,432 @@ function Shell() {
   );
 }
 
-function Header() {
-  const brand = import.meta.env.VITE_BRAND_NAME || "Stellwag Klimatechnik";
-  const logoUrl = (import.meta.env.VITE_LOGO_URL as string | undefined) || undefined;
+// ---- Startseite: oben Projekte + „Neues Projekt“; unten Fälligkeiten + Kalender
+function HomeDashboard(props: {
+  projects: Project[];
+  loading: boolean;
+  onSelect: (id: string) => void;
+  onCreated: (p: Project) => void;
+}) {
+  const { projects, loading, onSelect, onCreated } = props;
+
   return (
-    <header className="bg-white border-b">
-      <div className="max-w-6xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          {logoUrl ? (
-            <img src={logoUrl} alt="Logo" className="h-8" />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-blue-100 grid place-items-center">❄️</div>
-          )}
-          <div className="text-lg">{brand} – Projekte</div>
-        </div>
-        <button
-          className="text-sm text-slate-600 hover:text-slate-900"
-          onClick={async () => {
-            await supabase.auth.signOut();
-          }}
-        >
-          Abmelden
-        </button>
-      </div>
-    </header>
+    <div className="space-y-8">
+      {/* Aktuelle Projekte */}
+      <section>
+        <div className="mb-3 text-base text-slate-600">Aktuelle Projekte</div>
+        <ProjectsTable projects={projects} loading={loading} onSelect={onSelect} />
+      </section>
+
+      {/* Neues Projekt anlegen */}
+      <section>
+        <div className="mb-3 text-base text-slate-600">Neues Projekt anlegen</div>
+        <CreateProjectForm onCreated={onCreated} />
+      </section>
+
+      {/* Fälligkeiten + Kalender unten */}
+      <section className="grid gap-6 md:grid-cols-2">
+        <DueWidget projects={projects} />
+        <CalendarWidget />
+      </section>
+    </div>
   );
 }
 
-// ================= LIST + DASHBOARD =================
-function ProjectList({ onOpen }: { onOpen: (p: Project) => void }) {
-  const [items, setItems] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
-  const [notes, setNotes] = useState("");
-  const [tab, setTab] = useState<"laufend" | "abgeschlossen">(
-    (localStorage.getItem("spm_list_tab") as any) || "laufend"
+// ---- Tabelle „Aktuelle Projekte“ -------------------------------------------
+function ProjectsTable(props: {
+  projects: Project[];
+  loading: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const { projects, loading, onSelect } = props;
+
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+        Lädt …
+      </div>
+    );
+  }
+
+  if (!projects.length) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+        Noch keine Projekte angelegt.
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-slate-600">
+          <tr>
+            <th className="px-4 py-3 text-left">Code</th>
+            <th className="px-4 py-3 text-left">Name</th>
+            <th className="px-4 py-3 text-left">Status</th>
+            <th className="px-4 py-3 text-left">Angelegt</th>
+            <th className="px-4 py-3 text-left">Kunde (E-Mail / Telefon)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {projects.map((p) => (
+            <tr
+              key={p.id}
+              className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+              onClick={() => onSelect(p.id)}
+              title="Details öffnen"
+            >
+              <td className="px-4 py-2">{p.code}</td>
+              <td className="px-4 py-2">{p.name}</td>
+              <td className="px-4 py-2">{p.status ?? ""}</td>
+              <td className="px-4 py-2">{formatDate(p.created_at)}</td>
+              <td className="px-4 py-2">
+                <div className="flex flex-col">
+                  <span className="truncate">{p.customer_email ?? "—"}</span>
+                  <span className="text-slate-500">{p.customer_phone ?? ""}</span>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
-  const [tasks, setTasks] = useState<(Task & { project: Project })[]>([]);
+}
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const data = await fetchProjects();
-      setItems(data);
-      const t = await fetchTasksAllProjects();
-      setTasks(t);
-    } catch (e: any) {
-      alert(e.message || "Fehler beim Laden");
-    } finally {
-      setLoading(false);
-    }
-  };
-  useEffect(() => void load(), []);
-
-  const onCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setCreating(true);
-    try {
-      const p = await createProject({ name, notes });
-      setName("");
-      setNotes("");
-      setItems((xs) => [p as Project, ...xs]);
-    } catch (e: any) {
-      alert(e.message || "Fehler beim Anlegen");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const filtered = items.filter((p) =>
-    tab === "abgeschlossen"
-      ? ["abgerechnet", "storniert"].includes(p.status)
-      : !["abgerechnet", "storniert"].includes(p.status)
-  );
-
-  const today = new Date();
-  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-  const monthDays = Array.from({ length: endOfMonth.getDate() }, (_, i) => i + 1);
-  const tasksByDay = new Map<number, number>();
-  tasks.forEach((t) => {
-    if (!t.due_date) return;
-    const d = new Date(t.due_date);
-    if (d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear()) {
-      tasksByDay.set(d.getDate(), (tasksByDay.get(d.getDate()) || 0) + 1);
-    }
+// ---- Neues Projekt ----------------------------------------------------------
+function CreateProjectForm(props: { onCreated: (p: Project) => void }) {
+  const { onCreated } = props;
+  const [form, setForm] = useState<NewProject>({
+    code: "",
+    name: "",
+    status: STATUS_OPTIONS[0],
+    notes: "",
   });
-  const upcoming = tasks
-    .filter((t) => !!t.due_date && new Date(t.due_date!) >= today && !t.done)
-    .slice(0, 20);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const canSubmit = form.code.trim() && form.name.trim();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit || submitting) return;
+
+    try {
+      setErrorMsg(null);
+      setSubmitting(true);
+      const created = await insertProject(form);
+      onCreated(created);
+
+      // Formular zurücksetzen
+      setForm({
+        code: "",
+        name: "",
+        status: STATUS_OPTIONS[0],
+        notes: "",
+      });
+    } catch (e: any) {
+      console.error(e);
+      setErrorMsg(e?.message ?? "Konnte Projekt nicht anlegen.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-4"
+    >
+      {errorMsg && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {errorMsg}
+        </div>
+      )}
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="flex flex-col gap-1">
+          <label className="text-sm text-slate-600">Code</label>
+          <input
+            className="rounded-xl border border-slate-300 px-3 py-2"
+            value={form.code}
+            onChange={(e) => setForm((s) => ({ ...s, code: e.target.value }))}
+            placeholder="z. B. PRJ‑2025‑001"
+            required
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-sm text-slate-600">Name</label>
+          <input
+            className="rounded-xl border border-slate-300 px-3 py-2"
+            value={form.name}
+            onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
+            placeholder="Projektname"
+            required
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-sm text-slate-600">Status</label>
+          <select
+            className="rounded-xl border border-slate-300 px-3 py-2"
+            value={form.status ?? ""}
+            onChange={(e) => setForm((s) => ({ ...s, status: e.target.value }))}
+          >
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1 md:col-span-2">
+          <label className="text-sm text-slate-600">Notizen</label>
+          <textarea
+            className="rounded-xl border border-slate-300 px-3 py-2"
+            rows={3}
+            value={form.notes ?? ""}
+            onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
+            placeholder="Kurzbeschreibung, Ziele, Besonderheiten …"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={!canSubmit || submitting}
+          className="rounded-xl bg-blue-600 px-3 py-2 text-white disabled:opacity-50"
+        >
+          {submitting ? "Wird angelegt …" : "Projekt anlegen"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ---- Projekt-Details inkl. Kundendaten -------------------------------------
+function ProjectDetail(props: {
+  project: Project;
+  onBack: () => void;
+  onProjectUpdated: (p: Project) => void;
+}) {
+  const { project, onBack, onProjectUpdated } = props;
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const [base, setBase] = useState({
+    name: project.name,
+    code: project.code,
+    status: project.status ?? "",
+    notes: project.notes ?? "",
+  });
+
+  const [cust, setCust] = useState({
+    customer_address: project.customer_address ?? "",
+    customer_email: project.customer_email ?? "",
+    customer_phone: project.customer_phone ?? "",
+  });
+
+  const hasChanges =
+    base.name !== project.name ||
+    base.code !== project.code ||
+    (base.status ?? "") !== (project.status ?? "") ||
+    (base.notes ?? "") !== (project.notes ?? "") ||
+    (cust.customer_address ?? "") !== (project.customer_address ?? "") ||
+    (cust.customer_email ?? "") !== (project.customer_email ?? "") ||
+    (cust.customer_phone ?? "") !== (project.customer_phone ?? "");
+
+  const handleSave = async () => {
+    try {
+      setErrorMsg(null);
+      setSaving(true);
+      const patch: Partial<Project> = {
+        name: base.name,
+        code: base.code,
+        status: base.status,
+        notes: base.notes,
+        customer_address: cust.customer_address || null,
+        customer_email: cust.customer_email || null,
+        customer_phone: cust.customer_phone || null,
+      };
+      const updated = await updateProject(project.id, patch);
+      onProjectUpdated(updated);
+    } catch (e: any) {
+      console.error(e);
+      setErrorMsg(e?.message ?? "Konnte Änderungen nicht speichern.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
-      {/* LIST – Aktuelle/Abgeschlossene Projekte (JETZT OBEN) */}
-      <div className="bg-white rounded-2xl shadow">
-        <div className="p-4 border-b flex items-center gap-2">
-          <h2 className="text-lg mr-auto">Projekte</h2>
-          <button
-            className={clsx("px-3 py-2 rounded-xl", tab === "laufend" ? "bg-slate-900 text-white" : "hover:bg-slate-100")}
-            onClick={() => { setTab("laufend"); localStorage.setItem("spm_list_tab","laufend"); }}
-          >
-            Laufende Projekte
-          </button>
-          <button
-            className={clsx("px-3 py-2 rounded-xl", tab === "abgeschlossen" ? "bg-slate-900 text-white" : "hover:bg-slate-100")}
-            onClick={() => { setTab("abgeschlossen"); localStorage.setItem("spm_list_tab","abgeschlossen"); }}
-          >
-            Abgeschlossene Projekte
-          </button>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onBack}
+          className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+        >
+          ← Zur Übersicht
+        </button>
+        <h2 className="text-base text-slate-600">Projektdetails</h2>
+      </div>
+
+      {errorMsg && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {errorMsg}
         </div>
-        <div className="p-0 overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-slate-600">
-              <tr>
-                <th className="text-left p-3">Nr.</th>
-                <th className="text-left p-3">Name</th>
-                <th className="text-left p-3">Status</th>
-                <th className="text-left p-3">Angelegt</th>
-                <th className="p-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td className="p-4" colSpan={5}>Lädt…</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td className="p-4" colSpan={5}>Keine Projekte im Tab „{tab}“.</td></tr>
-              ) : (
-                filtered.map((p) => (
-                  <tr key={p.id} className="border-t">
-                    <td className="p-3 whitespace-nowrap font-medium">{p.code}</td>
-                    <td className="p-3">{p.name}</td>
-                    <td className="p-3"><StatusBadge value={p.status} /></td>
-                    <td className="p-3 whitespace-nowrap">{formatDate(p.created_at)}</td>
-                    <td className="p-3 text-right">
-                      <button className="text-blue-600 underline" onClick={() => onOpen(p)}>Öffnen</button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      )}
+
+      <div className="grid gap-6 md:grid-cols-2">
+        {/* Linke Spalte: Basisdaten */}
+        <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-4">
+          <div className="text-sm text-slate-600">Basisdaten</div>
+          <div className="grid gap-3">
+            <Field label="Name">
+              <input
+                className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                value={base.name}
+                onChange={(e) => setBase((s) => ({ ...s, name: e.target.value }))}
+              />
+            </Field>
+            <Field label="Code">
+              <input
+                className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                value={base.code}
+                onChange={(e) => setBase((s) => ({ ...s, code: e.target.value }))}
+              />
+            </Field>
+            <Field label="Status">
+              <select
+                className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                value={base.status}
+                onChange={(e) => setBase((s) => ({ ...s, status: e.target.value }))}
+              >
+                {STATUS_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Notizen">
+              <textarea
+                className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                rows={4}
+                value={base.notes}
+                onChange={(e) => setBase((s) => ({ ...s, notes: e.target.value }))}
+              />
+            </Field>
+            <div className="text-xs text-slate-500">
+              Angelegt am {formatDate(project.created_at)}
+            </div>
+          </div>
+        </div>
+
+        {/* Rechte Spalte: Kundendaten */}
+        <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-4">
+          <div className="text-sm text-slate-600">Kundendaten</div>
+          <div className="grid gap-3">
+            <Field label="Adresse">
+              <input
+                className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                placeholder="Straße Hausnr., PLZ Ort"
+                value={cust.customer_address}
+                onChange={(e) =>
+                  setCust((s) => ({ ...s, customer_address: e.target.value }))
+                }
+              />
+            </Field>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label="E‑Mail">
+                <input
+                  type="email"
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                  placeholder="kunde@example.com"
+                  value={cust.customer_email}
+                  onChange={(e) =>
+                    setCust((s) => ({ ...s, customer_email: e.target.value }))
+                  }
+                />
+              </Field>
+              <Field label="Telefon">
+                <input
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                  placeholder="+49 …"
+                  value={cust.customer_phone}
+                  onChange={(e) =>
+                    setCust((s) => ({ ...s, customer_phone: e.target.value }))
+                  }
+                />
+              </Field>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* CREATE – Neues Projekt (JETZT direkt unter der Liste) */}
-      <div className="bg-white rounded-2xl shadow p-4">
-        <h2 className="text-lg mb-3">Neues Projekt anlegen</h2>
-        <form onSubmit={onCreate} className="grid md:grid-cols-3 gap-3">
-          <input className="border rounded-xl px-3 py-2" placeholder="Projekt-/Kundenname" value={name} onChange={(e) => setName(e.target.value)} />
-          <input className="border rounded-xl px-3 py-2 md:col-span-2" placeholder="Notizen (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          <div className="md:col-span-3">
-            <button className="rounded-xl px-4 py-2 bg-blue-600 text-white" disabled={creating}>{creating ? "Speichere…" : "Projekt anlegen"}</button>
-          </div>
-        </form>
-      </div>
-
-      {/* DASHBOARD – Fälligkeiten + Kalender (JETZT UNTEN) */}
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-2xl shadow p-4">
-          <h3 className="font-medium mb-2">Nächste Fälligkeiten</h3>
-          <div className="space-y-2 max-h-64 overflow-auto pr-1">
-            {upcoming.length === 0 ? (
-              <div className="text-sm text-slate-500">Keine anstehenden Aufgaben.</div>) : (
-              upcoming.map((t) => (
-                <div key={t.id} className="text-sm border rounded-xl p-2">
-                  <div className="font-medium">{t.title}</div>
-                  <div className="text-slate-500">{formatDate(t.due_date)} – {t.project?.code} {t.project?.name}</div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl shadow p-4 md:col-span-2">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-medium">Kalender – {today.toLocaleString("de-DE", { month: "long", year: "numeric" })}</h3>
-            <button className="text-sm underline" onClick={load}>Aktualisieren</button>
-          </div>
-          <div className="grid grid-cols-7 text-xs text-slate-500 mb-1">
-            {["Mo","Di","Mi","Do","Fr","Sa","So"].map((w) => (<div key={w} className="px-2 py-1">{w}</div>))}
-          </div>
-          <div className="grid grid-cols-7 gap-1">
-            {Array.from({ length: (startOfMonth.getDay() + 6) % 7 }).map((_, i) => (
-              <div key={`pad-${i}`} className="h-20 rounded-xl bg-transparent" />
-            ))}
-            {monthDays.map((d) => (
-              <div key={d} className="h-20 rounded-xl border bg-slate-50 p-2">
-                <div className="text-xs font-medium">{d}</div>
-                <div className="mt-1 flex gap-1 flex-wrap">
-                  {Array.from({ length: tasksByDay.get(d) || 0 }).map((_, i) => (
-                    <span key={i} className="w-2 h-2 rounded-full inline-block bg-blue-600" />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-    </div>
-  );
-}
-
-function StatusBadge({ value }: { value: ProjectStatus }) {
-  const map: Record<ProjectStatus, string> = {
-    planung: "bg-slate-100 text-slate-700",
-    angebot: "bg-amber-100 text-amber-800",
-    bestellt: "bg-sky-100 text-sky-800",
-    montage: "bg-indigo-100 text-indigo-800",
-    inbetriebnahme: "bg-emerald-100 text-emerald-800",
-    abgerechnet: "bg-green-100 text-green-800",
-    storniert: "bg-rose-100 text-rose-800",
-  };
-  return <span className={clsx("px-2 py-1 rounded-full text-xs", map[value])}>{STATUS_LABEL[value]}</span>;
-}
-
-// ================= PROJECT DETAIL =================
-function ProjectDetail({ project, onBack, onProjectUpdated }: { project: Project; onBack: () => void; onProjectUpdated: (p: Project) => void }) {
-  const [active, setActive] = useState<"overview" | "docs" | "gallery" | "parts" | "time" | "tasks">("overview");
-  const [status, setStatus] = useState<ProjectStatus>(project.status);
-  useEffect(() => setStatus(project.status), [project.id]);
-
-  const saveStatus = async () => {
-    try {
-      await updateProjectStatus(project.id, status);
-      onProjectUpdated({ ...project, status });
-    } catch (e: any) { alert(e.message || "Fehler beim Speichern"); }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <button className="text-sm underline" onClick={onBack}>Zurück zur Übersicht</button>
-        <div className="text-right">
-          <div className="text-2xl font-semibold">{project.name}</div>
-          <div className="text-slate-500">Projekt {project.code}</div>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-2xl shadow">
-        <div className="flex gap-2 p-2 border-b overflow-auto">
-          <TabButton active={active === "overview"} onClick={() => setActive("overview")}>Übersicht</TabButton>
-          <TabButton active={active === "parts"} onClick={() => setActive("parts")}>Teile</TabButton>
-          <TabButton active={active === "time"} onClick={() => setActive("time")}>Stunden</TabButton>
-          <TabButton active={active === "docs"} onClick={() => setActive("docs")}>Dokumente</TabButton>
-          <TabButton active={active === "gallery"} onClick={() => setActive("gallery")}>Fotos</TabButton>
-          <TabButton active={active === "tasks"} onClick={() => setActive("tasks")}>Aufgaben</TabButton>
-        </div>
-        <div className="p-4">
-          {active === "overview" && <OverviewPanel project={project} status={status} setStatus={setStatus} saveStatus={saveStatus} onProjectUpdated={onProjectUpdated} />}
-          {active === "parts" && <PartsPanel projectId={project.id} />}
-          {active === "time" && <TimePanel projectId={project.id} />}
-          {active === "docs" && <DocumentsPanel projectId={project.id} />}
-          {active === "gallery" && <GalleryPanel projectId={project.id} />}
-          {active === "tasks" && <TasksPanel projectId={project.id} />}
-        </div>
+      <div className="flex items-center gap-3">
+        <button
+          className="rounded-xl bg-blue-600 px-3 py-2 text-white disabled:opacity-50"
+          onClick={handleSave}
+          disabled={!hasChanges || saving}
+        >
+          {saving ? "Speichern …" : "Änderungen speichern"}
+        </button>
+        {!hasChanges && (
+          <span className="text-sm text-slate-500">Keine ungespeicherten Änderungen</span>
+        )}
       </div>
     </div>
   );
 }
 
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+// ---- Kleine Helfer-Komponente für Felder -----------------------------------
+function Field(props: { label: string; children: React.ReactNode }) {
   return (
-    <button className={clsx("px-3 py-2 rounded-xl whitespace-nowrap", active ? "bg-slate-900 text-white" : "hover:bg-slate-100")} onClick={onClick}>{children}</button>
+    <label className="flex flex-col gap-1 text-sm">
+      <span className="text-slate-600">{props.label}</span>
+      {props.children}
+    </label>
   );
 }
 
-// ================= OVERVIEW (Status, Notizen, Profit + KUNDENDATEN) =================
-function OverviewPanel({ project, status, setStatus, saveStatus, onProjectUpdated }: { project: Project; status: ProjectStatus; setStatus: (s: ProjectStatus) => void; saveStatus: () => void; onProjectUpdated: (p: Project) => void }) {
-  const [notes, setNotes] = useState(project.notes ?? "");
-  const [price, setPrice] = useState({
-    quote_total_net: project.quote_total_net ?? 0,
-    invoiced_total_net: project.invoiced_total_net ?? 0,
-    hourly_rate: project.hourly_rate ?? DEFAULT_HOURLY,
-  });
-  const [cust, setCust] = useState({
-    customer_address: project.customer_address ?? "",
-    customer_email:   project.customer_email ?? "",
-    customer_phone:   project.customer_phone ?? "",
-  });
+// ---- „Fälligkeiten“ (einfacher Platzhalter; du kannst hier deine Logik ergänzen)
+function DueWidget(props: { projects: Project[] }) {
+  const { projects } = props;
 
-  const [parts, setParts] = useState<Part[]>([]);
-  const [time, setTime] = useState<TimeEntry[]>([]);
-
-  const reloadAgg = async () => {
-    const [p, t] = await Promise.all([fetchParts(project.id), fetchTime(project.id)]);
-    setParts(p); setTime(t);
-  };
-  useEffect(() => { reloadAgg(); }, [project.id]);
-
-  const sumParts = useMemo(() => parts.reduce((s, r) => s + (Number(r.purchase_price_net||0) * Number(r.qty||1)) + Number(r.shipping_cost_net||0), 0), [parts]);
-  const sumHours = useMemo(() => time.reduce((s, r) => s + (Number(r.hours)||0), 0), [time]);
-  const cost = sumParts + sumHours * Number(price.hourly_rate || 0);
-  const revenue = Number(price.invoiced_total_net || price.quote_total_net || 0);
-  const margin = revenue - cost;
-
-  const saveNotes = async () => {
-    const p = await updateProject(project.id, { notes });
-    onProjectUpdated(p);
-  };
-  const saveFinance = async () => {
-    const p = await updateProject(project.id, price);
-    onProjectUpdated(p);
-  };
-  const saveCustomer = async () => {
-    const p = await updateProject(project.id, cust);
-    onProjectUpdated(p);
-  };
-
+  // Wenn du Deadlines/Fälligkeiten in einer anderen Tabelle pflegst,
+  // kannst du hier eine eigene Abfrage ergänzen. Aktuell zeigen wir nur
+  // eine einfache Info an.
   return (
-    <div className="grid md:grid-cols-2 gap-6">
-      <div className="space-y-4">
-        <div>
-          <div className="text-sm text-slate-600 mb-1">Status</div>
-          <div className="flex gap-2 items-center">
-            <select value={status} onChange={(e) => setStatus(e.target.value as ProjectStatus)} className="border rounded-xl px-3 py-2">
-              {Object.entries(STATUS_LABEL).map(([val, label]) => (<option key={val} value={val}>{label}</option>))}
-            </select>
-            <button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveStatus}>Speichern</button>
-          </div>
-        </div>
+    <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6">
+      <div className="mb-2 text-sm text-slate-600">Fälligkeiten</div>
+      <div className="text-sm text-slate-500">
+        Keine individuellen Fälligkeiten konfiguriert. Ergänze hier deine Logik (Tasks,
+        Deadlines etc.), falls vorhanden.
+      </div>
+      {!!projects.length && (
+        <ul className="mt-3 space-y-1 text-sm text-slate-700">
+          {projects.slice(0, 3).map((p) => (
+            <li key={p.id} className="truncate">
+              • {p.name} – Status: {p.status ?? "—"}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
-        {/* KUNDENDATEN */}
-        <div>
-          <div className="text-sm text-slate-600 mb-1">Kundendaten</div>
-          <div className="grid md:grid-cols-2 gap-3">
-            <input
-              className="border rounded-xl px-3 py-2 md:col-span-2"
-              placeholder="Adresse"
-              value={cust.customer_address}
-              onChange={(e)=>setCust(s=>({...s, customer_address: e.target.value}))}
-            />
-            <input
-              type="email"
-              className="border rounded-xl px-3 py-2"
-              placeholder="E-Mail"
-              value={cust.customer_email}
-              onChange={(e)=>setCust(s=>({...s, customer_email: e.target.value}))}
-            />
-            <input
-              className="border rounded-xl px-3 py-2"
-              placeholder="Telefon"
-              value={cust.customer_phone}
-              onChange={(e)=>setCust(s=>({...s, customer_phone: e.target.value}))}
-            />
-          </div>
-          <div className="mt-2">
-            <button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveCustomer}>Kundendaten speichern</button>
-          </div>
-        </div>
-
-        <div>
-          <div className="text-sm text-slate-600 mb-1">Notizen</div>
-          <textarea className="border rounded-xl px-3 py-2 w-full min-h-[120px]" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          <div className="mt-2"><button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveNo
+// ---- „Kalender“ (Platzhalter – optional später durch echtes Widget ersetzen)
+function CalendarWidget() {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6">
+      <div className="mb-2 text-sm text-slate-600">Kalender</div>
+      <div className="text-sm text-slate-500">
+        Hier kann ein Kalender oder eine Timeline eingebunden werden (z. B. externe
+        Komponente oder iCal).
+      </div>
+    </div>
+  );
+}
