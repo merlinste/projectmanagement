@@ -33,14 +33,16 @@ export type Project = {
   status: ProjectStatus;
   notes: string | null;
   created_at: string;
+
+  // Kundendaten
   customer_address?: string | null;
   customer_email?: string | null;
   customer_phone?: string | null;
+
   // Profit inputs
   quote_total_net?: number | null;        // Angebotssumme netto
   invoiced_total_net?: number | null;     // tatsächlich abgerechnet netto (optional)
   hourly_rate?: number | null;            // Standard-Satz
-  
 };
 
 export type DocumentCategory =
@@ -327,7 +329,6 @@ async function deletePart(id: string) {
 }
 
 async function fetchTasksAllProjects(): Promise<(Task & { project: Project })[]> {
-  // Upcoming (this month +/-) for dashboard
   const { data, error } = await supabase
     .from("project_tasks")
     .select("id, project_id, title, due_date, done, notes, created_at, projects:project_id(id, name, code, status)")
@@ -492,68 +493,22 @@ function ProjectList({ onOpen }: { onOpen: (p: Project) => void }) {
 
   return (
     <div className="space-y-6">
-      {/* DASH: Kalender + Fälligkeiten */}
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-2xl shadow p-4 md:col-span-2">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-medium">Kalender – {today.toLocaleString("de-DE", { month: "long", year: "numeric" })}</h3>
-            <button className="text-sm underline" onClick={load}>Aktualisieren</button>
-          </div>
-          <div className="grid grid-cols-7 text-xs text-slate-500 mb-1">
-            {["Mo","Di","Mi","Do","Fr","Sa","So"].map((w) => (
-              <div key={w} className="px-2 py-1">{w}</div>
-            ))}
-          </div>
-          <div className="grid grid-cols-7 gap-1">
-            {Array.from({ length: (startOfMonth.getDay() + 6) % 7 }).map((_, i) => (
-              <div key={`pad-${i}`} className="h-20 rounded-xl bg-transparent" />
-            ))}
-            {monthDays.map((d) => (
-              <div key={d} className="h-20 rounded-xl border bg-slate-50 p-2">
-                <div className="text-xs font-medium">{d}</div>
-                <div className="mt-1 flex gap-1 flex-wrap">
-                  {Array.from({ length: tasksByDay.get(d) || 0 }).map((_, i) => (
-                    <span key={i} className="w-2 h-2 rounded-full bg-blue-600 inline-block" />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl shadow p-4">
-          <h3 className="font-medium mb-2">Nächste Fälligkeiten</h3>
-          <div className="space-y-2 max-h-64 overflow-auto pr-1">
-            {upcoming.length === 0 ? (
-              <div className="text-sm text-slate-500">Keine anstehenden Aufgaben.</div>) : (
-              upcoming.map((t) => (
-                <div key={t.id} className="text-sm border rounded-xl p-2">
-                  <div className="font-medium">{t.title}</div>
-                  <div className="text-slate-500">{formatDate(t.due_date)} – {t.project?.code} {t.project?.name}</div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* CREATE */}
-      <div className="bg-white rounded-2xl shadow p-4">
-        <h2 className="text-lg mb-3">Neues Projekt anlegen</h2>
-        <form onSubmit={onCreate} className="grid md:grid-cols-3 gap-3">
-          <input className="border rounded-xl px-3 py-2" placeholder="Projekt-/Kundenname" value={name} onChange={(e) => setName(e.target.value)} />
-          <input className="border rounded-xl px-3 py-2 md:col-span-2" placeholder="Notizen (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          <div className="md:col-span-3">
-            <button className="rounded-xl px-4 py-2 bg-blue-600 text-white" disabled={creating}>{creating ? "Speichere…" : "Projekt anlegen"}</button>
-          </div>
-        </form>
-      </div>
-
-      {/* LIST */}
+      {/* LIST – Aktuelle/Abgeschlossene Projekte (JETZT OBEN) */}
       <div className="bg-white rounded-2xl shadow">
         <div className="p-4 border-b flex items-center gap-2">
           <h2 className="text-lg mr-auto">Projekte</h2>
-          <button className={clsx("px-3 py-2 rounded-xl", tab === "laufend" ? "bg-slate-900 text-white" : "hover:bg-slate-100")} onClick={() => { setTab("laufend"); localStorage.setItem("spm_list_tab","laufend"); }}>Laufende Projekte</button>
-          <button className={clsx("px-3 py-2 rounded-xl", tab === "abgeschlossen" ? "bg-slate-900 text-white" : "hover:bg-slate-100")} onClick={() => { setTab("abgeschlossen"); localStorage.setItem("spm_list_tab","abgeschlossen"); }}>Abgeschlossene Projekte</button>
+          <button
+            className={clsx("px-3 py-2 rounded-xl", tab === "laufend" ? "bg-slate-900 text-white" : "hover:bg-slate-100")}
+            onClick={() => { setTab("laufend"); localStorage.setItem("spm_list_tab","laufend"); }}
+          >
+            Laufende Projekte
+          </button>
+          <button
+            className={clsx("px-3 py-2 rounded-xl", tab === "abgeschlossen" ? "bg-slate-900 text-white" : "hover:bg-slate-100")}
+            onClick={() => { setTab("abgeschlossen"); localStorage.setItem("spm_list_tab","abgeschlossen"); }}
+          >
+            Abgeschlossene Projekte
+          </button>
         </div>
         <div className="p-0 overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -588,6 +543,61 @@ function ProjectList({ onOpen }: { onOpen: (p: Project) => void }) {
           </table>
         </div>
       </div>
+
+      {/* CREATE – Neues Projekt (JETZT direkt unter der Liste) */}
+      <div className="bg-white rounded-2xl shadow p-4">
+        <h2 className="text-lg mb-3">Neues Projekt anlegen</h2>
+        <form onSubmit={onCreate} className="grid md:grid-cols-3 gap-3">
+          <input className="border rounded-xl px-3 py-2" placeholder="Projekt-/Kundenname" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="border rounded-xl px-3 py-2 md:col-span-2" placeholder="Notizen (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+          <div className="md:col-span-3">
+            <button className="rounded-xl px-4 py-2 bg-blue-600 text-white" disabled={creating}>{creating ? "Speichere…" : "Projekt anlegen"}</button>
+          </div>
+        </form>
+      </div>
+
+      {/* DASHBOARD – Fälligkeiten + Kalender (JETZT UNTEN) */}
+      <div className="grid md:grid-cols-3 gap-4">
+        <div className="bg-white rounded-2xl shadow p-4">
+          <h3 className="font-medium mb-2">Nächste Fälligkeiten</h3>
+          <div className="space-y-2 max-h-64 overflow-auto pr-1">
+            {upcoming.length === 0 ? (
+              <div className="text-sm text-slate-500">Keine anstehenden Aufgaben.</div>) : (
+              upcoming.map((t) => (
+                <div key={t.id} className="text-sm border rounded-xl p-2">
+                  <div className="font-medium">{t.title}</div>
+                  <div className="text-slate-500">{formatDate(t.due_date)} – {t.project?.code} {t.project?.name}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl shadow p-4 md:col-span-2">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-medium">Kalender – {today.toLocaleString("de-DE", { month: "long", year: "numeric" })}</h3>
+            <button className="text-sm underline" onClick={load}>Aktualisieren</button>
+          </div>
+          <div className="grid grid-cols-7 text-xs text-slate-500 mb-1">
+            {["Mo","Di","Mi","Do","Fr","Sa","So"].map((w) => (<div key={w} className="px-2 py-1">{w}</div>))}
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {Array.from({ length: (startOfMonth.getDay() + 6) % 7 }).map((_, i) => (
+              <div key={`pad-${i}`} className="h-20 rounded-xl bg-transparent" />
+            ))}
+            {monthDays.map((d) => (
+              <div key={d} className="h-20 rounded-xl border bg-slate-50 p-2">
+                <div className="text-xs font-medium">{d}</div>
+                <div className="mt-1 flex gap-1 flex-wrap">
+                  {Array.from({ length: tasksByDay.get(d) || 0 }).map((_, i) => (
+                    <span key={i} className="w-2 h-2 rounded-full inline-block bg-blue-600" />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
     </div>
   );
 }
@@ -656,7 +666,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
-// ================= OVERVIEW (Status, Notizen, Profit) =================
+// ================= OVERVIEW (Status, Notizen, Profit + KUNDENDATEN) =================
 function OverviewPanel({ project, status, setStatus, saveStatus, onProjectUpdated }: { project: Project; status: ProjectStatus; setStatus: (s: ProjectStatus) => void; saveStatus: () => void; onProjectUpdated: (p: Project) => void }) {
   const [notes, setNotes] = useState(project.notes ?? "");
   const [price, setPrice] = useState({
@@ -664,6 +674,12 @@ function OverviewPanel({ project, status, setStatus, saveStatus, onProjectUpdate
     invoiced_total_net: project.invoiced_total_net ?? 0,
     hourly_rate: project.hourly_rate ?? DEFAULT_HOURLY,
   });
+  const [cust, setCust] = useState({
+    customer_address: project.customer_address ?? "",
+    customer_email:   project.customer_email ?? "",
+    customer_phone:   project.customer_phone ?? "",
+  });
+
   const [parts, setParts] = useState<Part[]>([]);
   const [time, setTime] = useState<TimeEntry[]>([]);
 
@@ -687,6 +703,10 @@ function OverviewPanel({ project, status, setStatus, saveStatus, onProjectUpdate
     const p = await updateProject(project.id, price);
     onProjectUpdated(p);
   };
+  const saveCustomer = async () => {
+    const p = await updateProject(project.id, cust);
+    onProjectUpdated(p);
+  };
 
   return (
     <div className="grid md:grid-cols-2 gap-6">
@@ -700,395 +720,37 @@ function OverviewPanel({ project, status, setStatus, saveStatus, onProjectUpdate
             <button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveStatus}>Speichern</button>
           </div>
         </div>
+
+        {/* KUNDENDATEN */}
+        <div>
+          <div className="text-sm text-slate-600 mb-1">Kundendaten</div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <input
+              className="border rounded-xl px-3 py-2 md:col-span-2"
+              placeholder="Adresse"
+              value={cust.customer_address}
+              onChange={(e)=>setCust(s=>({...s, customer_address: e.target.value}))}
+            />
+            <input
+              type="email"
+              className="border rounded-xl px-3 py-2"
+              placeholder="E-Mail"
+              value={cust.customer_email}
+              onChange={(e)=>setCust(s=>({...s, customer_email: e.target.value}))}
+            />
+            <input
+              className="border rounded-xl px-3 py-2"
+              placeholder="Telefon"
+              value={cust.customer_phone}
+              onChange={(e)=>setCust(s=>({...s, customer_phone: e.target.value}))}
+            />
+          </div>
+          <div className="mt-2">
+            <button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveCustomer}>Kundendaten speichern</button>
+          </div>
+        </div>
+
         <div>
           <div className="text-sm text-slate-600 mb-1">Notizen</div>
           <textarea className="border rounded-xl px-3 py-2 w-full min-h-[120px]" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          <div className="mt-2"><button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveNotes}>Notizen speichern</button></div>
-        </div>
-      </div>
-      <div className="space-y-3 bg-slate-50 p-4 rounded-2xl">
-        <div className="text-sm text-slate-600">Profitabilität</div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="text-sm">Angebot netto
-            <input type="number" step="0.01" className="border rounded-xl px-3 py-2 w-full" value={price.quote_total_net} onChange={(e)=>setPrice((x)=>({...x, quote_total_net: Number(e.target.value)}))} />
-          </label>
-          <label className="text-sm">Abgerechnet netto (optional)
-            <input type="number" step="0.01" className="border rounded-xl px-3 py-2 w-full" value={price.invoiced_total_net} onChange={(e)=>setPrice((x)=>({...x, invoiced_total_net: Number(e.target.value)}))} />
-          </label>
-          <label className="text-sm">Stundensatz (€)
-            <input type="number" step="0.5" className="border rounded-xl px-3 py-2 w-full" value={price.hourly_rate} onChange={(e)=>setPrice((x)=>({...x, hourly_rate: Number(e.target.value)}))} />
-          </label>
-        </div>
-        <div className="text-sm grid grid-cols-2 gap-2">
-          <div className="p-2 bg-white rounded-xl border">Material+Versand: <b>{sumParts.toFixed(2)} €</b></div>
-          <div className="p-2 bg-white rounded-xl border">Arbeitskosten: <b>{(sumHours * Number(price.hourly_rate||0)).toFixed(2)} €</b></div>
-          <div className="p-2 bg-white rounded-xl border">Gesamtkosten: <b>{cost.toFixed(2)} €</b></div>
-          <div className="p-2 bg-white rounded-xl border">Erlös: <b>{revenue.toFixed(2)} €</b></div>
-          <div className={clsx("p-2 bg-white rounded-xl border col-span-2", margin>=0?"text-emerald-700":"text-rose-700")}>Deckungsbeitrag: <b>{margin.toFixed(2)} €</b></div>
-        </div>
-        <button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveFinance}>Finanzwerte speichern</button>
-      </div>
-    </div>
-  );
-}
-
-// ================= DOCUMENTS =================
-function DocumentsPanel({ projectId }: { projectId: string }) {
-  const [docs, setDocs] = useState<DocumentRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [cat, setCat] = useState<DocumentCategory>("angebot");
-
-  const load = async () => {
-    setLoading(true);
-    try { setDocs(await fetchDocuments(projectId)); } catch (e: any) { alert(e.message || "Fehler beim Laden"); } finally { setLoading(false); }
-  };
-  useEffect(() => void load(), [projectId]);
-
-  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (!files.length) return;
-    setUploading(true);
-    try {
-      for (const f of files) {
-        const d = await uploadDocument(projectId, cat, f);
-        const url = await signedUrl(d.storage_path);
-        setDocs((xs) => [{ ...(d as any), file_url: url }, ...xs]);
-      }
-    } catch (e: any) { alert(e.message || "Upload fehlgeschlagen"); }
-    finally { setUploading(false); e.currentTarget.value = ""; }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-col md:flex-row gap-2 md:items-center">
-        <select value={cat} onChange={(e) => setCat(e.target.value as DocumentCategory)} className="border rounded-xl px-3 py-2 w-full md:w-64">
-          {DOC_CATEGORIES.filter(c=>c.key!=="fotos").map((c) => (<option key={c.key} value={c.key}>{c.label}</option>))}
-        </select>
-        <label className="inline-flex items-center gap-2 whitespace-nowrap">
-          <div className="rounded-xl bg-blue-600 text-white px-3 py-1.5 text-sm cursor-pointer">Datei hochladen</div>
-          <input type="file" className="hidden" onChange={onUpload} disabled={uploading} multiple />
-        </label>
-        <button className="md:ml-auto underline text-sm" onClick={load}>Aktualisieren</button>
-      </div>
-
-      <div className="border rounded-2xl overflow-hidden">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr><th className="text-left p-3">Kategorie</th><th className="text-left p-3">Datei</th><th className="text-left p-3">Hochgeladen</th><th className="p-3"></th></tr></thead>
-          <tbody>
-            {loading ? (
-              <tr><td className="p-4" colSpan={4}>Lädt…</td></tr>
-            ) : docs.filter(d=>d.category!=="fotos").length === 0 ? (
-              <tr><td className="p-4" colSpan={4}>Noch keine Dokumente.</td></tr>
-            ) : (
-              docs.filter(d=>d.category!=="fotos").map((d) => (
-                <tr key={d.id} className="border-t">
-                  <td className="p-3">{DOC_CATEGORIES.find((c)=>c.key===d.category)?.label || d.category}</td>
-                  <td className="p-3">{d.filename}</td>
-                  <td className="p-3">{formatDate(d.uploaded_at)}</td>
-                  <td className="p-3 text-right flex gap-3 justify-end">
-                    {d.file_url ? (<a className="text-blue-600 underline" href={d.file_url} target="_blank" rel="noreferrer">Öffnen</a>) : (<span className="text-slate-400">kein Link</span>)}
-                    <button className="text-red-600 underline" onClick={async ()=>{ if(confirm("Dokument löschen?")){ await deleteDocumentRow(d); setDocs((xs)=>xs.filter((x)=>x.id!==d.id)); } }}>Löschen</button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ================= GALLERY (Fotos, Drag&Drop) =================
-function GalleryPanel({ projectId }: { projectId: string }) {
-  const [docs, setDocs] = useState<DocumentRow[]>([]);
-  const [over, setOver] = useState(false);
-
-  const load = async () => {
-    const all = await fetchDocuments(projectId);
-    setDocs(all.filter((d) => d.category === "fotos"));
-  };
-  useEffect(() => void load(), [projectId]);
-
-  const handleFiles = async (files: FileList | File[]) => {
-    const arr = Array.from(files);
-    for (const f of arr) {
-      const d = await uploadDocument(projectId, "fotos", f);
-      const url = await signedUrl(d.storage_path);
-      setDocs((xs) => [{ ...(d as any), file_url: url }, ...xs]);
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div
-        className={clsx("border-2 border-dashed rounded-2xl p-6 text-center bg-slate-50", over && "border-blue-500 bg-blue-50")}
-        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
-        onDragLeave={() => setOver(false)}
-        onDrop={async (e) => { e.preventDefault(); setOver(false); await handleFiles(e.dataTransfer.files); }}
-      >
-        <div className="mb-2 font-medium">Fotos hierher ziehen oder klicken</div>
-        <input type="file" multiple accept="image/*" onChange={(e)=> e.target.files && handleFiles(e.target.files)} />
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {docs.map((d) => (
-          <div key={d.id} className="relative group border rounded-xl overflow-hidden bg-white">
-            {d.file_url ? (
-              <a href={d.file_url} target="_blank" rel="noreferrer">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={d.file_url} alt={d.filename} className="aspect-square object-cover w-full" />
-              </a>
-            ) : (
-              <div className="aspect-square grid place-items-center text-slate-400">kein Bild</div>
-            )}
-            <button
-              className="absolute top-2 right-2 text-xs bg-white/90 border rounded px-2 py-1 hidden group-hover:block"
-              onClick={async ()=>{ if(confirm("Foto löschen?")){ await deleteDocumentRow(d); setDocs((xs)=>xs.filter((x)=>x.id!==d.id)); } }}
-            >Löschen</button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ================= PARTS =================
-function PartsPanel({ projectId }: { projectId: string }) {
-  const [rows, setRows] = useState<Part[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [display, setDisplay] = useState<"netto" | "brutto">("netto");
-  const [form, setForm] = useState({ name: "", qty: 1, supplier: "", purchase_price: "", sale_price: "", shipping_cost: "", price_mode: "netto" as "netto"|"brutto" });
-
-  const load = async () => {
-    setLoading(true);
-    try { setRows(await fetchParts(projectId)); } finally { setLoading(false); }
-  };
-  useEffect(() => void load(), [projectId]);
-
-  const add = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const pNet = toNet(Number(form.purchase_price || 0), form.price_mode);
-    const sNet = form.sale_price ? toNet(Number(form.sale_price||0), form.price_mode) : null;
-    const shipNet = form.shipping_cost ? toNet(Number(form.shipping_cost||0), form.price_mode) : null;
-    const rec = await addPart(projectId, {
-      name: form.name,
-      qty: Number(form.qty)||1,
-      supplier: form.supplier || null,
-      purchase_price_net: isNaN(pNet) ? null : pNet,
-      sale_price_net: sNet,
-      shipping_cost_net: shipNet,
-    });
-    setRows((xs)=>[rec, ...xs]);
-    setForm({ name: "", qty: 1, supplier: "", purchase_price: "", sale_price: "", shipping_cost: "", price_mode: form.price_mode });
-  };
-
-  const price = (net?: number | null) => {
-    const n = Number(net || 0);
-    return display === "netto" ? n : toGross(n);
-  };
-
-  const sumPurchase = rows.reduce((s,r)=> s + price(r.purchase_price_net) * Number(r.qty||1) + price(r.shipping_cost_net), 0);
-  const sumSale = rows.reduce((s,r)=> s + price(r.sale_price_net||0) * Number(r.qty||1), 0);
-
-  const toggle = async (row: Part, key: "ordered"|"delivered"|"installed") => {
-    const next = { ...row, [key]: !row[key] } as Part;
-    setRows((xs)=> xs.map((x)=> x.id===row.id ? next : x));
-    await updatePart(row.id, { [key]: next[key] } as any);
-  };
-
-  return (
-    <div className="space-y-4">
-      <form onSubmit={add} className="grid md:grid-cols-8 gap-3 bg-slate-50 p-3 rounded-2xl">
-        <input className="border rounded-xl px-3 py-2 md:col-span-2" placeholder="Teil / Bezeichnung" value={form.name} onChange={(e)=>setForm({...form, name: e.target.value})} required />
-        <input type="number" min="0" step="0.01" className="border rounded-xl px-3 py-2" placeholder="Menge" value={form.qty} onChange={(e)=>setForm({...form, qty: Number(e.target.value)})} />
-        <input className="border rounded-xl px-3 py-2" placeholder="Bezugsquelle" value={form.supplier} onChange={(e)=>setForm({...form, supplier: e.target.value})} />
-        <input type="number" min="0" step="0.01" className="border rounded-xl px-3 py-2" placeholder="EK" value={form.purchase_price} onChange={(e)=>setForm({...form, purchase_price: e.target.value})} />
-        <input type="number" min="0" step="0.01" className="border rounded-xl px-3 py-2" placeholder="VK (optional)" value={form.sale_price} onChange={(e)=>setForm({...form, sale_price: e.target.value})} />
-        <input type="number" min="0" step="0.01" className="border rounded-xl px-3 py-2" placeholder="Versand" value={form.shipping_cost} onChange={(e)=>setForm({...form, shipping_cost: e.target.value})} />
-        <select className="border rounded-xl px-3 py-2" value={form.price_mode} onChange={(e)=>setForm({...form, price_mode: e.target.value as any})}>
-          <option value="netto">Eingabe: Netto</option>
-          <option value="brutto">Eingabe: Brutto (19%)</option>
-        </select>
-        <button className="rounded-xl px-4 py-2 bg-blue-600 text-white">Hinzufügen</button>
-      </form>
-
-      <div className="flex items-center gap-2">
-        <div className="text-sm">Preise anzeigen:</div>
-        <button className={clsx("px-3 py-1.5 rounded-xl text-sm", display==="netto"?"bg-slate-900 text-white":"hover:bg-slate-100")} onClick={()=>setDisplay("netto")}>Netto</button>
-        <button className={clsx("px-3 py-1.5 rounded-xl text-sm", display==="brutto"?"bg-slate-900 text-white":"hover:bg-slate-100")} onClick={()=>setDisplay("brutto")}>Brutto (19%)</button>
-      </div>
-
-      <div className="border rounded-2xl overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="p-3 text-left">Teil</th>
-              <th className="p-3 text-left">Menge</th>
-              <th className="p-3 text-left">Bezugsquelle</th>
-              <th className="p-3 text-left">EK/{display==="netto"?"netto":"brutto"}</th>
-              <th className="p-3 text-left">VK/{display==="netto"?"netto":"brutto"}</th>
-              <th className="p-3 text-left">Versand/{display==="netto"?"netto":"brutto"}</th>
-              <th className="p-3 text-left">Bestellt</th>
-              <th className="p-3 text-left">Geliefert</th>
-              <th className="p-3 text-left">Montiert</th>
-              <th className="p-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td className="p-4" colSpan={10}>Lädt…</td></tr>
-            ) : rows.length === 0 ? (
-              <tr><td className="p-4" colSpan={10}>Noch keine Teile.</td></tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-3">{r.name}</td>
-                  <td className="p-3">{r.qty}</td>
-                  <td className="p-3">{r.supplier}</td>
-                  <td className="p-3">{price(r.purchase_price_net).toFixed(2)}</td>
-                  <td className="p-3">{r.sale_price_net!=null ? price(r.sale_price_net).toFixed(2) : ""}</td>
-                  <td className="p-3">{price(r.shipping_cost_net).toFixed(2)}</td>
-                  <td className="p-3"><input type="checkbox" checked={r.ordered} onChange={()=>toggle(r,"ordered")} /></td>
-                  <td className="p-3"><input type="checkbox" checked={r.delivered} onChange={()=>toggle(r,"delivered")} /></td>
-                  <td className="p-3"><input type="checkbox" checked={r.installed} onChange={()=>toggle(r,"installed")} /></td>
-                  <td className="p-3 text-right">
-                    <button className="text-red-600 underline" onClick={async ()=>{ if(confirm("Teil löschen?")){ await deletePart(r.id); setRows((xs)=>xs.filter((x)=>x.id!==r.id)); } }}>Löschen</button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-          <tfoot>
-            <tr className="border-t bg-slate-50">
-              <td className="p-3 font-medium" colSpan={3}>Summe</td>
-              <td className="p-3 font-medium">{sumPurchase.toFixed(2)}</td>
-              <td className="p-3 font-medium">{sumSale.toFixed(2)}</td>
-              <td colSpan={5}></td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ================= TIME =================
-function TimePanel({ projectId }: { projectId: string }) {
-  const [entries, setEntries] = useState<TimeEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [hours, setHours] = useState(1);
-  const [desc, setDesc] = useState("");
-  const [worker, setWorker] = useState("");
-  const total = useMemo(() => entries.reduce((s, e) => s + (Number(e.hours) || 0), 0), [entries]);
-
-  const load = async () => {
-    setLoading(true);
-    try { setEntries(await fetchTime(projectId)); } finally { setLoading(false); }
-  };
-  useEffect(() => void load(), [projectId]);
-
-  const onAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await addTime(projectId, { work_date: date, hours: Number(hours), description: desc, worker_name: worker });
-    setDesc(""); setHours(1); setWorker("");
-    await load();
-  };
-
-  return (
-    <div className="space-y-4">
-      <form onSubmit={onAdd} className="grid md:grid-cols-6 gap-3 bg-slate-50 p-3 rounded-2xl">
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="border rounded-xl px-3 py-2" />
-        <input type="number" step="0.25" min="0" value={hours} onChange={(e) => setHours(Number(e.target.value))} className="border rounded-xl px-3 py-2" placeholder="Stunden" />
-        <input className="border rounded-xl px-3 py-2" placeholder="Mitarbeiter" value={worker} onChange={(e)=>setWorker(e.target.value)} />
-        <input className="border rounded-xl px-3 py-2 md:col-span-2" placeholder="Beschreibung (optional)" value={desc} onChange={(e) => setDesc(e.target.value)} />
-        <button className="rounded-xl px-4 py-2 bg-blue-600 text-white">Hinzufügen</button>
-      </form>
-
-      <div className="border rounded-2xl overflow-hidden">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr><th className="text-left p-3">Datum</th><th className="text-left p-3">Stunden</th><th className="text-left p-3">Mitarbeiter</th><th className="text-left p-3">Beschreibung</th><th className="p-3"></th></tr></thead>
-          <tbody>
-            {loading ? (
-              <tr><td className="p-4" colSpan={5}>Lädt…</td></tr>
-            ) : entries.length === 0 ? (
-              <tr><td className="p-4" colSpan={5}>Keine Einträge vorhanden.</td></tr>
-            ) : (
-              entries.map((e) => (
-                <tr key={e.id} className="border-t">
-                  <td className="p-3">{formatDate(e.work_date)}</td>
-                  <td className="p-3">{e.hours}</td>
-                  <td className="p-3">{e.worker_name}</td>
-                  <td className="p-3">{e.description}</td>
-                  <td className="p-3 text-right"><DeleteBtn onClick={async()=>{ if(confirm("Eintrag löschen?")){ await deleteTimeEntry(e.id); setEntries((xs)=>xs.filter((x)=>x.id!==e.id)); } }} /></td>
-                </tr>
-              ))
-            )}
-          </tbody>
-          <tfoot>
-            <tr className="border-t bg-slate-50"><td className="p-3 font-medium">Summe</td><td className="p-3 font-medium">{total.toFixed(2)}</td><td colSpan={3}></td></tr>
-          </tfoot>
-        </table>
-      </div>
-    </div>
-  );
-}
-function DeleteBtn({ onClick }: { onClick: () => void }) { return <button className="text-red-600 underline" onClick={onClick}>Löschen</button>; }
-
-// ================= TASKS =================
-function TasksPanel({ projectId }: { projectId: string }) {
-  const [rows, setRows] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [title, setTitle] = useState("");
-  const [due, setDue] = useState<string | "">("");
-
-  const load = async () => { setLoading(true); try { setRows(await fetchTasks(projectId)); } finally { setLoading(false); } };
-  useEffect(() => void load(), [projectId]);
-
-  const add = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title.trim()) return;
-    const t = await addTask(projectId, { title, due_date: due || null });
-    setRows((xs)=>[...xs, t]); setTitle(""); setDue("");
-  };
-
-  const toggle = async (t: Task) => {
-    const next = { ...t, done: !t.done };
-    setRows((xs)=> xs.map((x)=> x.id===t.id ? next : x));
-    await updateTask(t.id, { done: next.done });
-  };
-
-  return (
-    <div className="space-y-4">
-      <form onSubmit={add} className="grid md:grid-cols-4 gap-3 bg-slate-50 p-3 rounded-2xl">
-        <input className="border rounded-xl px-3 py-2 md:col-span-2" placeholder="Aufgabe" value={title} onChange={(e)=>setTitle(e.target.value)} />
-        <input type="date" className="border rounded-xl px-3 py-2" value={due} onChange={(e)=>setDue(e.target.value)} />
-        <button className="rounded-xl px-4 py-2 bg-blue-600 text-white">Hinzufügen</button>
-      </form>
-
-      <div className="border rounded-2xl overflow-hidden">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr><th className="p-3 text-left">Erledigt</th><th className="p-3 text-left">Titel</th><th className="p-3 text-left">Fällig</th><th className="p-3"></th></tr></thead>
-          <tbody>
-            {loading ? (
-              <tr><td className="p-4" colSpan={4}>Lädt…</td></tr>
-            ) : rows.length === 0 ? (
-              <tr><td className="p-4" colSpan={4}>Keine Aufgaben.</td></tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-3"><input type="checkbox" checked={r.done} onChange={()=>toggle(r)} /></td>
-                  <td className="p-3">{r.title}</td>
-                  <td className="p-3">{formatDate(r.due_date)}</td>
-                  <td className="p-3 text-right"><DeleteBtn onClick={async()=>{ if(confirm("Aufgabe löschen?")){ await deleteTask(r.id); setRows((xs)=>xs.filter((x)=>x.id!==r.id)); } }} /></td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+          <div className="mt-2"><button className="rounded-xl px-3 py-2 bg-blue-600 text-white" onClick={saveNo
