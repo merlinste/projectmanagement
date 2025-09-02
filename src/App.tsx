@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-// ---- Supabase Client --------------------------------------------------------
+/* ------------------------- Supabase Client -------------------------------- */
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey);
 
-// ---- Typen ------------------------------------------------------------------
+/* ----------------------------- Typen -------------------------------------- */
 export type Project = {
   id: string;
   code: string;
@@ -14,15 +14,17 @@ export type Project = {
   status: string | null;
   notes: string | null;
   created_at: string;
+
   // Kundendaten
   customer_address: string | null;
   customer_email: string | null;
   customer_phone: string | null;
-  // Finanzfelder (optional vorhanden)
+
+  // Finanzfelder
   quote_total_net: number | null;
   hourly_rate: number | null;
   hours_planned: number | null;
-  hours_actual: number | null;
+  hours_actual: number | null; // bleibt für Kompatibilität; in IST verwenden wir die Zeitbuchungen
   other_costs: number | null;
   invoiced_net: number | null;
   payments_received: number | null;
@@ -46,7 +48,19 @@ type BomItem = {
   created_at: string | null;
 };
 
-// ---- Utils ------------------------------------------------------------------
+type TimeEntry = {
+  id: string;
+  project_id: string;
+  work_date: string; // YYYY-MM-DD
+  person: string | null;
+  description: string | null;
+  hours: number | null;
+  billable: boolean | null;
+  hourly_rate: number | null; // fallback auf project.hourly_rate in Berechnung
+  created_at: string | null;
+};
+
+/* ----------------------------- Utils -------------------------------------- */
 const money = (n: number) =>
   (isFinite(n) ? n : 0).toLocaleString(undefined, { style: "currency", currency: "EUR", maximumFractionDigits: 2 });
 
@@ -63,13 +77,9 @@ const formatDate = (iso?: string | null) => {
 
 const STATUS_OPTIONS = ["neu", "in_bearbeitung", "pausiert", "abgeschlossen"] as const;
 
-// ---- Datenfunktionen: Projekte ---------------------------------------------
+/* -------------------- Datenfunktionen: Projekte --------------------------- */
 async function fetchProjects(): Promise<Project[]> {
-  const { data, error } = await supabase
-    .from("projects")
-    .select("*") // bewusst *: optionale Spalten kein Problem
-    .order("created_at", { ascending: false });
-
+  const { data, error } = await supabase.from("projects").select("*").order("created_at", { ascending: false });
   if (error) throw error;
   return (data ?? []) as Project[];
 }
@@ -77,12 +87,7 @@ async function fetchProjects(): Promise<Project[]> {
 async function insertProject(p: NewProject): Promise<Project> {
   const { data, error } = await supabase
     .from("projects")
-    .insert({
-      code: p.code,
-      name: p.name,
-      status: p.status,
-      notes: p.notes,
-    })
+    .insert({ code: p.code, name: p.name, status: p.status, notes: p.notes })
     .select("*")
     .single();
   if (error) throw error;
@@ -90,17 +95,12 @@ async function insertProject(p: NewProject): Promise<Project> {
 }
 
 async function updateProject(id: string, patch: Partial<Project>): Promise<Project> {
-  const { data, error } = await supabase
-    .from("projects")
-    .update(patch)
-    .eq("id", id)
-    .select("*")
-    .single();
+  const { data, error } = await supabase.from("projects").update(patch).eq("id", id).select("*").single();
   if (error) throw error;
   return data as Project;
 }
 
-// ---- Datenfunktionen: BOM ---------------------------------------------------
+/* -------------------- Datenfunktionen: BOM -------------------------------- */
 async function fetchBom(projectId: string): Promise<BomItem[]> {
   const { data, error } = await supabase
     .from("bom_items")
@@ -129,12 +129,7 @@ async function addBomItem(projectId: string, position?: Partial<BomItem>): Promi
 }
 
 async function updateBomItem(id: string, patch: Partial<BomItem>): Promise<BomItem> {
-  const { data, error } = await supabase
-    .from("bom_items")
-    .update(patch)
-    .eq("id", id)
-    .select("*")
-    .single();
+  const { data, error } = await supabase.from("bom_items").update(patch).eq("id", id).select("*").single();
   if (error) throw error;
   return data as BomItem;
 }
@@ -144,12 +139,15 @@ async function deleteBomItem(id: string) {
   if (error) throw error;
 }
 
-// ---- Datenfunktionen: Storage ----------------------------------------------
+/* ---------------- Datenfunktionen: Storage (Dateien/Fotos) ---------------- */
 type FileEntry = { name: string; path: string; size: number; updated_at?: string };
 
 async function listBucket(bucket: "files" | "photos", projectId: string): Promise<FileEntry[]> {
   const prefix = `projects/${projectId}/`;
-  const { data, error } = await supabase.storage.from(bucket).list(prefix, { limit: 100, sortBy: { column: "updated_at", order: "desc" } });
+  const { data, error } = await supabase.storage.from(bucket).list(prefix, {
+    limit: 100,
+    sortBy: { column: "updated_at", order: "desc" },
+  });
   if (error) throw error;
   return (data ?? []).map((o) => ({
     name: o.name,
@@ -172,9 +170,7 @@ async function removeFromBucket(bucket: "files" | "photos", path: string) {
 }
 
 async function signedUrl(bucket: "files" | "photos", path: string, expiresInSec = 3600): Promise<string> {
-  // Für photos ist der Bucket öffentlich – getPublicUrl reicht. Für files generieren wir Signatur.
-  const isPublic = bucket === "photos";
-  if (isPublic) {
+  if (bucket === "photos") {
     const { data } = supabase.storage.from(bucket).getPublicUrl(path);
     return data.publicUrl;
   }
@@ -183,7 +179,49 @@ async function signedUrl(bucket: "files" | "photos", path: string, expiresInSec 
   return data.signedUrl;
 }
 
-// ---- App --------------------------------------------------------------------
+/* --------------- Datenfunktionen: Zeit (Stundenerfassung) ----------------- */
+async function fetchTimeEntries(projectId: string): Promise<TimeEntry[]> {
+  const { data, error } = await supabase
+    .from("time_entries")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("work_date", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as TimeEntry[];
+}
+
+async function addTimeEntry(project: Project, preset?: Partial<TimeEntry>): Promise<TimeEntry> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from("time_entries")
+    .insert({
+      project_id: project.id,
+      work_date: preset?.work_date ?? today,
+      person: preset?.person ?? "",
+      description: preset?.description ?? "",
+      hours: preset?.hours ?? 1,
+      billable: preset?.billable ?? true,
+      hourly_rate: preset?.hourly_rate ?? project.hourly_rate ?? null,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as TimeEntry;
+}
+
+async function updateTimeEntry(id: string, patch: Partial<TimeEntry>): Promise<TimeEntry> {
+  const { data, error } = await supabase.from("time_entries").update(patch).eq("id", id).select("*").single();
+  if (error) throw error;
+  return data as TimeEntry;
+}
+
+async function deleteTimeEntry(id: string) {
+  const { error } = await supabase.from("time_entries").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* -------------------------------- App ------------------------------------- */
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -209,7 +247,10 @@ export default function App() {
     };
   }, []);
 
-  const selectedProject = useMemo(() => projects.find((p) => p.id === selectedProjectId) ?? null, [projects, selectedProjectId]);
+  const selectedProject = useMemo(
+    () => projects.find((p) => p.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId]
+  );
 
   const handleCreated = (p: Project) => setProjects((prev) => [p, ...prev]);
   const handleUpdated = (p: Project) => setProjects((prev) => prev.map((x) => (x.id === p.id ? p : x)));
@@ -224,7 +265,11 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6">
-        {errorMsg && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{errorMsg}</div>}
+        {errorMsg && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {errorMsg}
+          </div>
+        )}
 
         {selectedProject ? (
           <ProjectDetail
@@ -241,25 +286,22 @@ export default function App() {
   );
 }
 
-// ---- Startseite (re-ordered) ------------------------------------------------
+/* -------------------------- Startseite (re-ordered) ------------------------ */
 function HomeDashboard(props: { projects: Project[]; loading: boolean; onSelect: (id: string) => void; onCreated: (p: Project) => void }) {
   const { projects, loading, onSelect, onCreated } = props;
 
   return (
     <div className="space-y-8">
-      {/* Aktuelle Projekte */}
       <section>
         <div className="mb-3 text-base text-slate-600">Aktuelle Projekte</div>
         <ProjectsTable projects={projects} loading={loading} onSelect={onSelect} />
       </section>
 
-      {/* Neues Projekt anlegen */}
       <section>
         <div className="mb-3 text-base text-slate-600">Neues Projekt anlegen</div>
         <CreateProjectForm onCreated={onCreated} />
       </section>
 
-      {/* Fälligkeiten + Kalender */}
       <section className="grid gap-6 md:grid-cols-2">
         <DueWidget projects={projects} />
         <CalendarWidget />
@@ -268,16 +310,12 @@ function HomeDashboard(props: { projects: Project[]; loading: boolean; onSelect:
   );
 }
 
-// ---- Projekte Tabelle -------------------------------------------------------
+/* --------------------------- Projekte Tabelle ------------------------------ */
 function ProjectsTable(props: { projects: Project[]; loading: boolean; onSelect: (id: string) => void }) {
   const { projects, loading, onSelect } = props;
 
-  if (loading) {
-    return <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">Lädt …</div>;
-  }
-  if (!projects.length) {
-    return <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">Noch keine Projekte angelegt.</div>;
-  }
+  if (loading) return <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">Lädt …</div>;
+  if (!projects.length) return <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">Noch keine Projekte angelegt.</div>;
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
@@ -317,7 +355,7 @@ function ProjectsTable(props: { projects: Project[]; loading: boolean; onSelect:
   );
 }
 
-// ---- Neues Projekt ----------------------------------------------------------
+/* ---------------------------- Neues Projekt -------------------------------- */
 function CreateProjectForm(props: { onCreated: (p: Project) => void }) {
   const { onCreated } = props;
   const [form, setForm] = useState<NewProject>({ code: "", name: "", status: STATUS_OPTIONS[0], notes: "" });
@@ -377,12 +415,11 @@ function CreateProjectForm(props: { onCreated: (p: Project) => void }) {
   );
 }
 
-// ---- Projektdetails + Tabs --------------------------------------------------
+/* -------------------------- Projektdetails + Tabs -------------------------- */
 function ProjectDetail(props: { project: Project; onBack: () => void; onProjectUpdated: (p: Project) => void }) {
   const { project, onBack, onProjectUpdated } = props;
-  const [active, setActive] = useState<"overview" | "profit" | "bom" | "files" | "photos">("overview");
+  const [active, setActive] = useState<"overview" | "profit" | "bom" | "files" | "photos" | "time">("overview");
 
-  // BOM lokal mitladen, weil Profit & Stückliste es brauchen
   const [bom, setBom] = useState<BomItem[]>([]);
   const [bomLoading, setBomLoading] = useState(true);
   const reloadBom = async () => {
@@ -407,30 +444,21 @@ function ProjectDetail(props: { project: Project; onBack: () => void; onProjectU
         <h2 className="text-base text-slate-600">Projektdetails</h2>
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-2 overflow-x-auto">
-        <TabButton active={active === "overview"} onClick={() => setActive("overview")}>
-          Übersicht
-        </TabButton>
-        <TabButton active={active === "profit"} onClick={() => setActive("profit")}>
-          Profitabilität
-        </TabButton>
-        <TabButton active={active === "bom"} onClick={() => setActive("bom")}>
-          Stückliste
-        </TabButton>
-        <TabButton active={active === "files"} onClick={() => setActive("files")}>
-          Dateien
-        </TabButton>
-        <TabButton active={active === "photos"} onClick={() => setActive("photos")}>
-          Fotos
-        </TabButton>
+        <TabButton active={active === "overview"} onClick={() => setActive("overview")}>Übersicht</TabButton>
+        <TabButton active={active === "profit"} onClick={() => setActive("profit")}>Profitabilität</TabButton>
+        <TabButton active={active === "bom"} onClick={() => setActive("bom")}>Stückliste</TabButton>
+        <TabButton active={active === "files"} onClick={() => setActive("files")}>Dateien</TabButton>
+        <TabButton active={active === "photos"} onClick={() => setActive("photos")}>Fotos</TabButton>
+        <TabButton active={active === "time"} onClick={() => setActive("time")}>Zeit</TabButton>
       </div>
 
       {active === "overview" && <OverviewPanel project={project} onProjectUpdated={onProjectUpdated} />}
-      {active === "profit" && <ProfitabilityPanel project={project} bom={bom} onProjectUpdated={onProjectUpdated} refreshingBom={bomLoading} />}
+      {active === "profit" && <ProfitabilityPanel project={project} bom={bom} refreshingBom={bomLoading} />}
       {active === "bom" && <BomPanel project={project} items={bom} loading={bomLoading} onChange={setBom} onReload={reloadBom} />}
       {active === "files" && <FilesPanel project={project} />}
       {active === "photos" && <PhotosPanel project={project} />}
+      {active === "time" && <TimePanel project={project} />}
     </div>
   );
 }
@@ -449,7 +477,7 @@ function TabButton(props: { active: boolean; onClick: () => void; children: Reac
   );
 }
 
-// ---- Übersicht (Basis + Kundendaten) ---------------------------------------
+/* -------------------- Übersicht (Basis + Kundendaten) ---------------------- */
 function OverviewPanel(props: { project: Project; onProjectUpdated: (p: Project) => void }) {
   const { project, onProjectUpdated } = props;
   const [saving, setSaving] = useState(false);
@@ -505,7 +533,6 @@ function OverviewPanel(props: { project: Project; onProjectUpdated: (p: Project)
       {errorMsg && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{errorMsg}</div>}
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Basisdaten */}
         <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-4">
           <div className="text-sm text-slate-600">Basisdaten</div>
           <div className="grid gap-3">
@@ -531,7 +558,6 @@ function OverviewPanel(props: { project: Project; onProjectUpdated: (p: Project)
           </div>
         </div>
 
-        {/* Kundendaten */}
         <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-4">
           <div className="text-sm text-slate-600">Kundendaten</div>
           <div className="grid gap-3">
@@ -576,25 +602,47 @@ function OverviewPanel(props: { project: Project; onProjectUpdated: (p: Project)
   );
 }
 
-// ---- Profitabilität ---------------------------------------------------------
-function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; onProjectUpdated: (p: Project) => void; refreshingBom: boolean }) {
-  const { project, bom, onProjectUpdated, refreshingBom } = props;
+/* --------------------------- Profitabilität -------------------------------- */
+function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; refreshingBom: boolean }) {
+  const { project, bom, refreshingBom } = props;
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
   const [fin, setFin] = useState({
     quote_total_net: project.quote_total_net ?? 0,
     hourly_rate: project.hourly_rate ?? 0,
     hours_planned: project.hours_planned ?? 0,
-    hours_actual: project.hours_actual ?? 0,
+    hours_actual: project.hours_actual ?? 0, // nicht verwendet in IST, bleibt editierbar
     other_costs: project.other_costs ?? 0,
     invoiced_net: project.invoiced_net ?? 0,
     payments_received: project.payments_received ?? 0,
   });
 
+  // Zeitkosten aus Stundenerfassung laden
+  const [timeSum, setTimeSum] = useState<{ hours: number; cost: number }>({ hours: 0, cost: 0 });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const entries = await fetchTimeEntries(project.id);
+        const hours = entries.reduce((s, e) => s + num(e.hours), 0);
+        const cost = entries.reduce(
+          (s, e) => s + num(e.hours) * num(e.hourly_rate ?? project.hourly_rate),
+          0
+        );
+        if (!cancelled) setTimeSum({ hours, cost });
+      } catch (e) {
+        // weiches Handling
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, project.hourly_rate]);
+
   const bomTotal = useMemo(() => bom.reduce((s, it) => s + num(it.qty) * num(it.unit_price_net), 0), [bom]);
+
   const plannedCost = num(fin.hours_planned) * num(fin.hourly_rate) + num(bomTotal) + num(fin.other_costs);
-  const actualCost = num(fin.hours_actual) * num(fin.hourly_rate) + num(bomTotal) + num(fin.other_costs);
+  const actualCost = num(timeSum.cost) + num(bomTotal) + num(fin.other_costs);
   const plannedProfit = num(fin.quote_total_net) - plannedCost;
   const actualProfit = num(fin.invoiced_net) - actualCost;
 
@@ -615,7 +663,7 @@ function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; onProject
         payments_received: num(fin.payments_received),
       };
       const updated = await updateProject(project.id, patch);
-      onProjectUpdated(updated);
+      // Werte lokal belassen; der Aufrufer aktualisiert Projektliste
     } catch (e: any) {
       console.error(e);
       setErr(e?.message ?? "Konnte Finanzdaten nicht speichern.");
@@ -629,7 +677,6 @@ function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; onProject
       {err && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</div>}
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Eingaben */}
         <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-4">
           <div className="text-sm text-slate-600">Plan / IST</div>
           <div className="grid gap-3">
@@ -643,7 +690,7 @@ function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; onProject
               <Field label="Stunden geplant">
                 <NumberInput value={fin.hours_planned} onChange={(v) => setFin((s) => ({ ...s, hours_planned: v }))} />
               </Field>
-              <Field label="Stunden IST">
+              <Field label="Stunden IST (manuell)">
                 <NumberInput value={fin.hours_actual} onChange={(v) => setFin((s) => ({ ...s, hours_actual: v }))} />
               </Field>
             </div>
@@ -661,15 +708,16 @@ function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; onProject
           </div>
         </div>
 
-        {/* Kennzahlen */}
         <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-3">
           <div className="text-sm text-slate-600 flex items-center gap-2">
             Kennzahlen
             {refreshingBom && <span className="text-xs text-slate-500">Stückliste wird aktualisiert …</span>}
           </div>
+          <KPI label="Zeit aus Erfassung (h)">{num(timeSum.hours).toFixed(2)}</KPI>
+          <KPI label="Zeitkosten (Erfassung)">{money(timeSum.cost)}</KPI>
           <KPI label="BOM (Material)">{money(bomTotal)}</KPI>
           <KPI label="Plan-Kosten (Std geplant + BOM + sonst.)">{money(plannedCost)}</KPI>
-          <KPI label="IST-Kosten (Std IST + BOM + sonst.)">{money(actualCost)}</KPI>
+          <KPI label="IST-Kosten (ZE + BOM + sonst.)">{money(actualCost)}</KPI>
           <KPI label="Plan-Gewinn">{money(plannedProfit)}</KPI>
           <KPI label="Plan-Marge">{isFinite(plannedMargin) ? plannedMargin.toFixed(1) + " %" : "—"}</KPI>
           <KPI label="IST-Gewinn">{money(actualProfit)}</KPI>
@@ -687,7 +735,7 @@ function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; onProject
   );
 }
 
-// ---- Stückliste -------------------------------------------------------------
+/* ------------------------------ Stückliste --------------------------------- */
 function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean; onChange: (items: BomItem[]) => void; onReload: () => void }) {
   const { project, items, loading, onChange, onReload } = props;
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -711,7 +759,7 @@ function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean;
       const updated = await updateBomItem(id, p);
       onChange(items.map((x) => (x.id === id ? updated : x)));
     } catch (e) {
-      onReload(); // Fallback: neu laden
+      onReload();
     }
   };
 
@@ -745,9 +793,7 @@ function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean;
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-4 py-3 text-slate-500" colSpan={7}>
-                  Lädt …
-                </td>
+                <td className="px-4 py-3 text-slate-500" colSpan={7}>Lädt …</td>
               </tr>
             ) : items.length ? (
               items.map((it, idx) => {
@@ -756,20 +802,10 @@ function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean;
                   <tr key={it.id} className="border-t border-slate-100">
                     <td className="px-4 py-2">{idx + 1}</td>
                     <td className="px-4 py-2">
-                      <input
-                        className="w-full rounded-xl border border-slate-300 px-2 py-1"
-                        value={it.item ?? ""}
-                        onChange={(e) => patch(it.id, { item: e.target.value })}
-                        placeholder="Artikel / Leistung"
-                      />
+                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.item ?? ""} onChange={(e) => patch(it.id, { item: e.target.value })} placeholder="Artikel / Leistung" />
                     </td>
                     <td className="px-4 py-2">
-                      <input
-                        className="w-full rounded-xl border border-slate-300 px-2 py-1"
-                        value={it.unit ?? ""}
-                        onChange={(e) => patch(it.id, { unit: e.target.value })}
-                        placeholder="Stk, m, h …"
-                      />
+                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.unit ?? ""} onChange={(e) => patch(it.id, { unit: e.target.value })} placeholder="Stk, m, h …" />
                     </td>
                     <td className="px-4 py-2 text-right">
                       <NumberInput small value={num(it.qty)} onChange={(v) => patch(it.id, { qty: v })} />
@@ -779,27 +815,21 @@ function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean;
                     </td>
                     <td className="px-4 py-2 text-right">{money(rowSum)}</td>
                     <td className="px-4 py-2 text-right">
-                      <button className="text-red-600 hover:underline" onClick={() => remove(it.id)}>
-                        löschen
-                      </button>
+                      <button className="text-red-600 hover:underline" onClick={() => remove(it.id)}>löschen</button>
                     </td>
                   </tr>
                 );
               })
             ) : (
               <tr>
-                <td className="px-4 py-3 text-slate-500" colSpan={7}>
-                  Keine Positionen angelegt.
-                </td>
+                <td className="px-4 py-3 text-slate-500" colSpan={7}>Keine Positionen angelegt.</td>
               </tr>
             )}
           </tbody>
           {items.length > 0 && (
             <tfoot>
               <tr className="border-t border-slate-200 bg-slate-50">
-                <td className="px-4 py-2" colSpan={5}>
-                  Summe
-                </td>
+                <td className="px-4 py-2" colSpan={5}>Summe</td>
                 <td className="px-4 py-2 text-right">{money(total)}</td>
                 <td />
               </tr>
@@ -809,18 +839,14 @@ function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean;
       </div>
 
       <div className="flex items-center gap-3">
-        <button className="rounded-xl bg-blue-600 px-3 py-2 text-white" onClick={create}>
-          Position hinzufügen
-        </button>
-        <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={onReload}>
-          Aktualisieren
-        </button>
+        <button className="rounded-xl bg-blue-600 px-3 py-2 text-white" onClick={create}>Position hinzufügen</button>
+        <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={onReload}>Aktualisieren</button>
       </div>
     </div>
   );
 }
 
-// ---- Dateien (Bucket: files) ------------------------------------------------
+/* -------------------------------- Dateien ---------------------------------- */
 function FilesPanel(props: { project: Project }) {
   const { project } = props;
   const [items, setItems] = useState<FileEntry[]>([]);
@@ -844,9 +870,7 @@ function FilesPanel(props: { project: Project }) {
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files?.length) return;
-    for (const f of Array.from(files)) {
-      await uploadToBucket("files", project.id, f);
-    }
+    for (const f of Array.from(files)) await uploadToBucket("files", project.id, f);
     await reload();
     e.currentTarget.value = "";
   };
@@ -878,20 +902,11 @@ function FilesPanel(props: { project: Project }) {
                   <div className="text-xs text-slate-500">{f.size} B • {formatDate(f.updated_at)}</div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <a
-                    className="text-blue-600 hover:underline text-sm"
-                    href="#"
-                    onClick={async (ev) => {
-                      ev.preventDefault();
-                      const url = await signedUrl("files", f.path);
-                      window.open(url, "_blank");
-                    }}
-                  >
+                  <a className="text-blue-600 hover:underline text-sm" href="#"
+                    onClick={async (ev) => { ev.preventDefault(); const url = await signedUrl("files", f.path); window.open(url, "_blank"); }}>
                     öffnen
                   </a>
-                  <button className="text-red-600 hover:underline text-sm" onClick={() => onDelete(f.path)}>
-                    löschen
-                  </button>
+                  <button className="text-red-600 hover:underline text-sm" onClick={() => onDelete(f.path)}>löschen</button>
                 </div>
               </li>
             ))}
@@ -904,7 +919,7 @@ function FilesPanel(props: { project: Project }) {
   );
 }
 
-// ---- Fotos (Bucket: photos) -------------------------------------------------
+/* --------------------------------- Fotos ----------------------------------- */
 function PhotosPanel(props: { project: Project }) {
   const { project } = props;
   const [items, setItems] = useState<FileEntry[]>([]);
@@ -928,9 +943,7 @@ function PhotosPanel(props: { project: Project }) {
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files?.length) return;
-    for (const f of Array.from(files)) {
-      await uploadToBucket("photos", project.id, f);
-    }
+    for (const f of Array.from(files)) await uploadToBucket("photos", project.id, f);
     await reload();
     e.currentTarget.value = "";
   };
@@ -983,23 +996,145 @@ function PhotoThumb(props: { bucket: "files" | "photos"; entry: FileEntry; onDel
   return (
     <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-white">
       {url ? (
-        <a href={url} target="_blank" rel="noreferrer">
-          <img src={url} alt={entry.name} className="w-full h-40 object-cover" />
-        </a>
+        <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={entry.name} className="w-full h-40 object-cover" /></a>
       ) : (
         <div className="h-40 flex items-center justify-center text-sm text-slate-500">Lädt …</div>
       )}
       <div className="absolute top-2 right-2">
-        <button className="rounded-lg bg-white/90 px-2 py-1 text-xs text-red-600" onClick={onDelete}>
-          löschen
-        </button>
+        <button className="rounded-lg bg-white/90 px-2 py-1 text-xs text-red-600" onClick={onDelete}>löschen</button>
       </div>
       <div className="p-2 text-xs text-slate-600 truncate">{entry.name}</div>
     </div>
   );
 }
 
-// ---- Kleine UI-Helfer -------------------------------------------------------
+/* ---------------------------- Zeit (Erfassung) ----------------------------- */
+function TimePanel(props: { project: Project }) {
+  const { project } = props;
+  const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const data = await fetchTimeEntries(project.id);
+      setEntries(data);
+    } catch (e: any) {
+      setErr(e?.message ?? "Konnte Zeitbuchungen nicht laden.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
+  const add = async () => {
+    const created = await addTimeEntry(project, { hourly_rate: project.hourly_rate ?? undefined });
+    setEntries((prev) => [created, ...prev]);
+  };
+
+  const patch = async (id: string, p: Partial<TimeEntry>) => {
+    const optimistic = entries.map((x) => (x.id === id ? { ...x, ...p } as TimeEntry : x));
+    setEntries(optimistic);
+    try {
+      const updated = await updateTimeEntry(id, p);
+      setEntries((prev) => prev.map((x) => (x.id === id ? updated : x)));
+    } catch {
+      reload();
+    }
+  };
+
+  const remove = async (id: string) => {
+    const optimistic = entries.filter((x) => x.id !== id);
+    setEntries(optimistic);
+    try {
+      await deleteTimeEntry(id);
+    } catch {
+      reload();
+    }
+  };
+
+  const totalHours = entries.reduce((s, e) => s + num(e.hours), 0);
+  const totalCost = entries.reduce((s, e) => s + num(e.hours) * num(e.hourly_rate ?? project.hourly_rate), 0);
+
+  return (
+    <div className="space-y-4">
+      {err && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</div>}
+
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-slate-600">Stundenerfassung</div>
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-slate-600">Summe: {totalHours.toFixed(2)} h • Kosten: {money(totalCost)}</div>
+          <button className="rounded-xl bg-blue-600 px-3 py-2 text-white" onClick={add}>Buchung hinzufügen</button>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="px-4 py-3 text-left">Datum</th>
+              <th className="px-4 py-3 text-left">Person</th>
+              <th className="px-4 py-3 text-left">Beschreibung</th>
+              <th className="px-4 py-3 text-right">Stunden</th>
+              <th className="px-4 py-3 text-right">Stundensatz</th>
+              <th className="px-4 py-3 text-left">billable</th>
+              <th className="px-4 py-3 text-right">Kosten</th>
+              <th className="px-4 py-3 text-right">Aktionen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td className="px-4 py-3 text-slate-500" colSpan={8}>Lädt …</td></tr>
+            ) : entries.length ? (
+              entries.map((e) => {
+                const cost = num(e.hours) * num(e.hourly_rate ?? project.hourly_rate);
+                return (
+                  <tr key={e.id} className="border-t border-slate-100">
+                    <td className="px-4 py-2">
+                      <input type="date" className="rounded-xl border border-slate-300 px-2 py-1"
+                        value={e.work_date ?? ""}
+                        onChange={(ev) => patch(e.id, { work_date: ev.target.value })} />
+                    </td>
+                    <td className="px-4 py-2">
+                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1"
+                        value={e.person ?? ""} onChange={(ev) => patch(e.id, { person: ev.target.value })} placeholder="Name" />
+                    </td>
+                    <td className="px-4 py-2">
+                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1"
+                        value={e.description ?? ""} onChange={(ev) => patch(e.id, { description: ev.target.value })} placeholder="Tätigkeit" />
+                    </td>
+                    <td className="px-4 py-2 text-right"><NumberInput small value={num(e.hours)} onChange={(v) => patch(e.id, { hours: v })} /></td>
+                    <td className="px-4 py-2 text-right"><NumberInput small value={num(e.hourly_rate ?? project.hourly_rate)} onChange={(v) => patch(e.id, { hourly_rate: v })} /></td>
+                    <td className="px-4 py-2">
+                      <input type="checkbox" checked={!!e.billable} onChange={(ev) => patch(e.id, { billable: ev.target.checked })} />
+                    </td>
+                    <td className="px-4 py-2 text-right">{money(cost)}</td>
+                    <td className="px-4 py-2 text-right">
+                      <button className="text-red-600 hover:underline" onClick={() => remove(e.id)}>löschen</button>
+                    </td>
+                  </tr>
+                );
+              })
+            ) : (
+              <tr><td className="px-4 py-3 text-slate-500" colSpan={8}>Noch keine Zeitbuchungen.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={reload}>Aktualisieren</button>
+      </div>
+    </div>
+  );
+}
+
+/* ----------------------------- Kleine Helfer ------------------------------- */
 function Field(props: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <label className={`flex flex-col gap-1 text-sm ${props.className ?? ""}`}>
@@ -1030,7 +1165,7 @@ function KPI(props: { label: string; children: React.ReactNode }) {
   );
 }
 
-// ---- Widgets ----------------------------------------------------------------
+/* -------------------------------- Widgets ---------------------------------- */
 function DueWidget(props: { projects: Project[] }) {
   const { projects } = props;
   return (
