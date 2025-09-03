@@ -1281,6 +1281,7 @@ function NextTasksWidget(props: { projects: Project[]; onSelectProject: (id: str
 }
 
 /* =============================== Angebot (Quote) ========================== */
+
 function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) => void }) {
   const { project, onProjectUpdated } = props;
   const [quote, setQuote] = useState<Quote | null>(null);
@@ -1823,6 +1824,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
   const tdRight = { ...tdStyle, textAlign: "right" as const };
   const sumRow = { display: "flex", justifyContent: "space-between", fontSize: 12 } as const;
 }
+
 /* ============================== UI-Helfer ================================= */
 function Field(props: { label: string; children: React.ReactNode; className?: string }) {
   return <label className={`flex flex-col gap-1 text-sm ${props.className ?? ""}`}><span className="text-slate-600">{props.label}</span>{props.children}</label>;
