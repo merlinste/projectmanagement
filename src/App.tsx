@@ -1288,21 +1288,18 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Rabattspalte standardmäßig ausgeblendet, aber zuschaltbar
+  // Rabattspalte standardmäßig aus
   const [showDiscount, setShowDiscount] = useState(false);
 
-  // Verdeckter, aber renderbarer Bereich für HTML→Bild→PDF
+  // Offscreen-Renderbereich für PDF
   const printableRef = useRef<HTMLDivElement>(null);
 
-  // Muster für die automatische Angebotsnummer:
-  // Falls du nur den Projektcode möchtest, ändere die Zeile darunter zu: return project.code;
   const defaultQuoteNumber = () => `${project.code}-A1`;
 
   const reload = async () => {
     setLoading(true);
     try {
       const q = await getOrCreateQuote(project.id);
-      // Angebotsnummer einmalig automatisch setzen
       if (!q.number || !q.number.trim()) {
         const updated = await updateQuote(q.id, { number: defaultQuoteNumber() });
         setQuote(updated);
@@ -1366,7 +1363,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     try { await deleteQuoteItem(id); } catch { reload(); }
   };
 
-  // Summe ins Projekt schreiben (Profitabilität)
+  // Summe ins Projekt übernehmen
   const saveAndSync = async () => {
     try {
       setErr(null);
@@ -1377,7 +1374,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
-  // Angebotspositionen in die Stückliste übernehmen (Einkauf)
+  // Angebotspositionen in BOM übernehmen
   const syncToBom = async () => {
     try {
       for (const it of items) {
@@ -1396,7 +1393,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
-  /* -------------------------- Druck: schöne A4-Seite -------------------------- */
+  /* ----------------------- Druck (Browser): sauberer Rand ----------------------- */
   const printOffer = () => {
     const win = window.open("", "_blank");
     if (!win) return;
@@ -1415,35 +1412,40 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
       </tr>`;
     }).join("");
 
-    // Content in einen .page-Wrapper mit Padding – unabhängig von @page-Margins
     win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Angebot ${project.code}</title>
       <style>
-        @page { size: A4; margin: 18mm; }        /* Druckrand */
+        @page { size: A4; margin: 16mm; }
         html, body { margin: 0; }
-        .page { box-sizing: border-box; padding: 0; } /* Rand kommt über @page; Fallback unten */
-        @media print {
-          .page { padding: 0; }
-        }
-        /* Fallback-Rand (für Browser, die @page ignorieren) */
-        .inner { box-sizing: border-box; padding: 12mm 0; margin: 0 0; }
-
         body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#0f172a; }
-        .head { display:flex; gap:16px; align-items:center; margin-bottom:10px; }
-        .head img { height: 42px; }
-        .head .meta { font-size:12px; color:#475569; line-height:1.35; }
+
+        .page { box-sizing: border-box; }
+        .inner { padding: 0 0; }
+
         h1 { margin: 6px 0 12px; font-size: 22px; }
         .muted { color:#64748b; font-size: 12px; }
-        .note { border-left: 4px solid #ef4444; background:#fff1f2; padding:8px 12px; margin:12px 0; font-size:12px; }
+        .head { display:flex; gap:16px; align-items:center; margin-bottom:10px; padding: 0 16mm; }
+        .head img { height: 42px; }
+        .head .meta { font-size:12px; color:#475569; line-height:1.35; }
+
+        .note { display:flex; align-items:baseline; gap:8px; border-left:4px solid #ef4444; background:#fff1f2;
+                padding:8px 12px; margin:12px 16mm; font-size:12px; line-height:1.35; }
+
+        .tableWrap { padding: 0 16mm; }
         table { width:100%; border-collapse:collapse; margin-top:12px; }
         th, td { border:1px solid #e2e8f0; padding:6px 8px; font-size:12px; vertical-align:top; }
         th { background:#f8fafc; text-align:left; }
         td.r, th.r { text-align:right; }
-        .totals { margin-top:10px; width: 60%; margin-left:auto; }
+
+        .totals { margin-top:10px; width: 60%; margin-left:auto; padding: 0 16mm; }
+        .totals table { width:100%; border-collapse:collapse; }
         .totals td { border:none; font-size:12px; padding:4px 0; }
         .totals .line td { border-top:2px solid #334155; }
-        .block { margin-top:12px; }
+
+        .block { margin:12px 16mm 0; }
         .block h3 { margin:0 0 6px; font-size: 14px; }
-        footer { position:fixed; bottom:0; left:0; right:0; color:#94a3b8; font-size:10px; }
+        .block .body { font-size:12px; } /* <-- Zahlungsbedingungen-Text fix auf 12px */
+
+        footer { position:fixed; bottom:0; left:0; right:0; color:#94a3b8; font-size:10px; padding: 0 16mm; }
       </style>
     </head><body>
       <div class="page">
@@ -1457,46 +1459,57 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
             </div>
           </div>
 
-          <h1>Angebot</h1>
-          <div class="muted">${escapeHtml(project.code)} — ${escapeHtml(project.name)}</div>
-          <div class="muted">Datum: ${quote?.date ?? ""} • Gültig bis: ${quote?.valid_until ?? ""} • Angebots‑Nr.: ${quote?.number ?? ""}</div>
+          <div style="padding: 0 16mm">
+            <h1>Angebot</h1>
+            <div class="muted">${escapeHtml(project.code)} — ${escapeHtml(project.name)}</div>
+            <div class="muted">Datum: ${quote?.date ?? ""} • Gültig bis: ${quote?.valid_until ?? ""} • Angebots‑Nr.: ${quote?.number ?? ""}</div>
 
-          <div class="block">
-            <h3>Kunde</h3>
-            <div class="muted">${escapeHtml(project.customer_address ?? "")}</div>
-            <div class="muted">${escapeHtml(project.customer_email ?? "")} • ${escapeHtml(project.customer_phone ?? "")}</div>
+            <div style="margin-top:10px">
+              <h3 style="margin:0 0 6px; font-size:14px">Kunde</h3>
+              <div class="muted">${escapeHtml(project.customer_address ?? "")}</div>
+              <div class="muted">${escapeHtml(project.customer_email ?? "")} • ${escapeHtml(project.customer_phone ?? "")}</div>
+            </div>
           </div>
 
-          <div class="note"><strong>WICHTIG:</strong> ${escapeHtml(IMPORTANT_NOTE)}</div>
+          <div class="note"><strong>WICHTIG:</strong><span>${escapeHtml(IMPORTANT_NOTE)}</span></div>
 
-          <table>
-            <thead>
-              <tr>
-                <th>Pos.</th><th>Bezeichnung / Beschreibung</th><th>Einheit</th>
-                <th class="r">Menge</th><th class="r">EP netto</th>
-                ${showDiscount ? `<th class="r">Rabatt %</th>` : ""}
-                <th class="r">Summe netto</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
+          <div class="tableWrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Pos.</th><th>Bezeichnung / Beschreibung</th><th>Einheit</th>
+                  <th class="r">Menge</th><th class="r">EP netto</th>
+                  ${showDiscount ? `<th class="r">Rabatt %</th>` : ""}
+                  <th class="r">Summe netto</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
 
-          <table class="totals">
-            <tr><td>Zwischensumme (netto)</td><td class="r">${money(totals.sumNet)}</td></tr>
-            <tr><td>MwSt (${totals.taxRate.toFixed(0)} %)</td><td class="r">${money(totals.vat)}</td></tr>
-            <tr class="line"><td><strong>Gesamt (brutto)</strong></td><td class="r"><strong>${money(totals.gross)}</strong></td></tr>
-          </table>
+          <div class="totals">
+            <table>
+              <tr><td>Zwischensumme (netto)</td><td class="r">${money(totals.sumNet)}</td></tr>
+              <tr><td>MwSt (${totals.taxRate.toFixed(0)} %)</td><td class="r">${money(totals.vat)}</td></tr>
+              <tr class="line"><td><strong>Gesamt (brutto)</strong></td><td class="r"><strong>${money(totals.gross)}</strong></td></tr>
+            </table>
+          </div>
 
-          <div class="block"><h3>Zahlungsbedingungen</h3><div>50 % bei Auftragserteilung, 50 % nach Fertigstellung.</div></div>
-          ${quote?.notes ? `<div class="block"><h3>Hinweise</h3><div class="muted">${escapeHtml(quote.notes)}</div></div>` : ""}
-          <div class="block muted">Es gelten die beiliegenden Allgemeinen Geschäftsbedingungen (AGB).</div>
+          <div class="block">
+            <h3>Zahlungsbedingungen</h3>
+            <div class="body">50 % bei Auftragserteilung, 50 % nach Fertigstellung.</div>
+          </div>
+
+          ${quote?.notes ? `<div class="block"><h3>Hinweise</h3><div class="muted body">${escapeHtml(quote.notes)}</div></div>` : ""}
+
+          <div class="block muted body">Es gelten die beiliegenden Allgemeinen Geschäftsbedingungen (AGB).</div>
         </div>
+
         <footer>${COMPANY.name} • ${COMPANY.addressLines.join(" • ")} • ${COMPANY.email}</footer>
       </div>
     </body></html>`);
 
     win.document.close();
-    // nicht automatisch schließen – Tab bleibt offen; Druck nach kurzem Delay
     win.onload = () => setTimeout(() => win.print(), 300);
 
     function escapeHtml(s: string) {
@@ -1504,7 +1517,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
-  /* --------------- PDF-Export inkl. AGB: html2canvas + pdf-lib --------------- */
+  /* ------------------ PDF-Export (inkl. AGB): Ränder + Typografie sync ------------------ */
   const exportPdfWithAgb = async () => {
     try {
       await loadScriptOnce("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
@@ -1517,14 +1530,18 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
       const root = printableRef.current;
       if (!root) throw new Error("Printbereich nicht gefunden.");
 
-      // A4-Breite (96dpi). Mit Padding über box-sizing, damit nichts abgeschnitten wird.
+      // A4 Breite (96dpi). Innenrand oben/unten + links/rechts -> nichts wird abgeschnitten.
       const A4_W = 794;
       root.style.width = `${A4_W}px`;
 
-      const canvas: HTMLCanvasElement = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
+      const canvas: HTMLCanvasElement = await html2canvas(root, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+      });
+
       const fullW = canvas.width;
       const fullH = canvas.height;
-
       const pdf = await PDFLib.PDFDocument.create();
       const pageWpt = 595.28, pageHpt = 841.89;
       const pageHpx = Math.floor((pageHpt / pageWpt) * fullW);
@@ -1695,11 +1712,11 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
         </table>
       </div>
 
-      {/* Render-Bereich für PDF (sichtbar außerhalb des Bildschirms, mit Innenrand) */}
+      {/* PDF-Render: gleiches Layout wie oben, mit Innenrand links/rechts und sauberer Typografie */}
       <div
         ref={printableRef}
         className="fixed -left-[10000px] top-0 bg-white text-black"
-        style={{ width: 794, boxSizing: "border-box", padding: "18mm 0" }}  // Ober-/Unterrand für sauberen Schnitt
+        style={{ width: 794, boxSizing: "border-box", padding: "18mm 0" }}
       >
         {/* Kopf */}
         <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 8, padding: "0 16mm" }}>
@@ -1723,64 +1740,62 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
             <div style={{ color: "#64748b", fontSize: 12 }}>{project.customer_address ?? ""}</div>
             <div style={{ color: "#64748b", fontSize: 12 }}>{project.customer_email ?? ""} • {project.customer_phone ?? ""}</div>
           </div>
-
-          <div style={{ borderLeft: "4px solid #ef4444", background: "#fff1f2", padding: "8px 12px", margin: "10px 0", fontSize: 12 }}>
-            <strong>WICHTIG:</strong> {IMPORTANT_NOTE}
-          </div>
         </div>
 
-        {/* Tabelle */}
-        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
-          <thead>
-            <tr>
-              <th style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "left" }}>Pos.</th>
-              <th style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "left" }}>Bezeichnung / Beschreibung</th>
-              <th style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "left" }}>Einheit</th>
-              <th style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "right" }}>Menge</th>
-              <th style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "right" }}>EP netto</th>
-              {showDiscount && (
-                <th style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "right" }}>Rabatt %</th>
-              )}
-              <th style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "right" }}>Summe netto</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((it, i) => {
-              const line = num(it.qty) * (num(it.unit_price_net) * (1 - num(it.discount_pct) / 100));
-              return (
-                <tr key={it.id}>
-                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px" }}>{it.pos ?? i + 1}</td>
-                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px" }}>
-                    <div><strong>{it.item}</strong></div>
-                    {it.description && <div style={{ color: "#64748b" }}>{it.description}</div>}
-                  </td>
-                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px" }}>{it.unit ?? ""}</td>
-                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{num(it.qty).toLocaleString()}</td>
-                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{money(num(it.unit_price_net))}</td>
-                  {showDiscount && (
-                    <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{num(it.discount_pct)}%</td>
-                  )}
-                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{money(line)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div style={{
+          display: "flex", alignItems: "baseline", gap: 8,
+          borderLeft: "4px solid #ef4444", background: "#fff1f2",
+          padding: "8px 12px", margin: "10px 16mm", fontSize: 12, lineHeight: 1.35
+        }}>
+          <strong>WICHTIG:</strong><span>{IMPORTANT_NOTE}</span>
+        </div>
+
+        {/* Tabelle mit linkem/rechtem Innenrand */}
+        <div style={{ padding: "0 16mm" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Pos.</th>
+                <th style={thStyle}>Bezeichnung / Beschreibung</th>
+                <th style={thStyle}>Einheit</th>
+                <th style={thRight}>Menge</th>
+                <th style={thRight}>EP netto</th>
+                {showDiscount && <th style={thRight}>Rabatt %</th>}
+                <th style={thRight}>Summe netto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, i) => {
+                const line = num(it.qty) * (num(it.unit_price_net) * (1 - num(it.discount_pct) / 100));
+                return (
+                  <tr key={it.id}>
+                    <td style={tdStyle}>{it.pos ?? i + 1}</td>
+                    <td style={tdStyle}>
+                      <div><strong>{it.item}</strong></div>
+                      {it.description && <div style={{ color: "#64748b" }}>{it.description}</div>}
+                    </td>
+                    <td style={tdStyle}>{it.unit ?? ""}</td>
+                    <td style={tdRight}>{num(it.qty).toLocaleString()}</td>
+                    <td style={tdRight}>{money(num(it.unit_price_net))}</td>
+                    {showDiscount && <td style={tdRight}>{num(it.discount_pct)}%</td>}
+                    <td style={tdRight}>{money(line)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
 
         {/* Summen */}
         <div style={{ width: "60%", marginLeft: "auto", marginTop: 10, padding: "0 16mm" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-            <div>Zwischensumme (netto)</div><div>{money(totals.sumNet)}</div>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-            <div>MwSt ({totals.taxRate.toFixed(0)} %)</div><div>{money(totals.vat)}</div>
-          </div>
+          <div style={sumRow}><div>Zwischensumme (netto)</div><div>{money(totals.sumNet)}</div></div>
+          <div style={sumRow}><div>MwSt ({totals.taxRate.toFixed(0)} %)</div><div>{money(totals.vat)}</div></div>
           <div style={{ borderTop: "2px solid #334155", marginTop: 6, paddingTop: 6, display: "flex", justifyContent: "space-between", fontWeight: 600, fontSize: 12 }}>
             <div>Gesamt (brutto)</div><div>{money(totals.gross)}</div>
           </div>
         </div>
 
-        {/* Zahlungsbed. + Notizen */}
+        {/* Zahlungsbedingungen + Notizen */}
         <div style={{ marginTop: 10, padding: "0 16mm" }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Zahlungsbedingungen</div>
           <div style={{ fontSize: 12 }}>50 % bei Auftragserteilung, 50 % nach Fertigstellung.</div>
@@ -1797,6 +1812,16 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
       </div>
     </div>
   );
+
+  // --- Styles für PDF-Tabelle (vermeidet Wiederholung) ---
+  function thBase() {
+    return { border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "left" as const, fontSize: 12 };
+  }
+  const thStyle = thBase();
+  const thRight = { ...thBase(), textAlign: "right" as const };
+  const tdStyle = { border: "1px solid #e2e8f0", padding: "6px 8px", fontSize: 12 };
+  const tdRight = { ...tdStyle, textAlign: "right" as const };
+  const sumRow = { display: "flex", justifyContent: "space-between", fontSize: 12 } as const;
 }
 /* ============================== UI-Helfer ================================= */
 function Field(props: { label: string; children: React.ReactNode; className?: string }) {
