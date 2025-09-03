@@ -106,6 +106,40 @@ const STATUS_OPTIONS = [
   "Nicht Beauftragt",
 ] as const;
 
+/* ==== Firmenblock / AGB-Pfad ==== */
+const COMPANY = {
+  name: "Stellwag Klimatechnik",
+  addressLines: ["Am Eschbachtal 15", "60437 Frankfurt"],
+  email: "info@stellwag-klimatechnik.de",
+  logoPath: "/logo_small.png",
+};
+const AGB_PDF_PATH = "/AGB_Stellwag_Klimatechnik_v2.pdf";
+
+/* ==== wichtiger Hinweis (deutlich hervorheben) ==== */
+const IMPORTANT_NOTE =
+  "Stromversorgung bauseits gemäß Herstellervorgaben. Keine Arbeiten an der ortsfesten Elektroinstallation durch Stellwag Klimatechnik.";
+
+/* ==== Runtime-Loader für CDN-Skripte (html2canvas + pdf-lib) ==== */
+async function loadScriptOnce(src: string): Promise<void> {
+  if (document.querySelector(`script[src="${src}"]`)) return;
+  await new Promise<void>((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+function dataUrlToUint8Array(dataUrl: string): Uint8Array {
+  const base64 = dataUrl.split(",")[1] ?? "";
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
 const isArchived = (status?: string | null) => {
   const s = String(status ?? "").toLowerCase();
   return s === "abgeschlossen" || s === "nicht beauftragt";
@@ -1254,6 +1288,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
+  // Unsichtbarer (aber renderbarer) Bereich für HTML→Bild→PDF
   const printableRef = useRef<HTMLDivElement>(null);
 
   const reload = async () => {
@@ -1262,9 +1297,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
       const q = await getOrCreateQuote(project.id);
       setQuote(q);
       const it = await fetchQuoteItems(q.id);
-      // fortlaufende Pos-Nummer sicherstellen
-      const normalized = it.map((x, i) => ({ ...x, pos: x.pos ?? i + 1 }));
-      setItems(normalized);
+      setItems(it.map((x, i) => ({ ...x, pos: x.pos ?? i + 1 })));
     } catch (e: any) {
       setErr(e?.message ?? "Konnte Angebot nicht laden.");
     } finally {
@@ -1278,7 +1311,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
       const line = num(it.qty) * (num(it.unit_price_net) * (1 - num(it.discount_pct) / 100));
       return s + line;
     }, 0);
-    const taxRate = num(quote?.tax_rate ?? 0);
+    const taxRate = num(quote?.tax_rate ?? 19);
     const vat = (sumNet * taxRate) / 100;
     const gross = sumNet + vat;
     return { sumNet, vat, gross, taxRate };
@@ -1292,7 +1325,13 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
 
   const createItem = async () => {
     if (!quote) return;
-    const created = await addQuoteItem(quote.id, { pos: (items[items.length - 1]?.pos ?? 0) + 1, item: "", qty: 1, unit_price_net: 0, discount_pct: 0 });
+    const created = await addQuoteItem(quote.id, {
+      pos: (items[items.length - 1]?.pos ?? 0) + 1,
+      item: "",
+      qty: 1,
+      unit_price_net: 0,
+      discount_pct: 0,
+    });
     setItems((prev) => [...prev, created]);
   };
 
@@ -1302,7 +1341,9 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     try {
       const updated = await updateQuoteItem(id, p);
       setItems((prev) => prev.map((x) => (x.id === id ? updated : x)));
-    } catch { reload(); }
+    } catch {
+      reload();
+    }
   };
 
   const removeItem = async (id: string) => {
@@ -1314,7 +1355,6 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
   const saveAndSync = async () => {
     try {
       setErr(null);
-      // 1) Angebots-Gesamtsumme auf Projekt schreiben (für Profitabilität)
       const updatedProject = await updateProject(project.id, { quote_total_net: totals.sumNet });
       onProjectUpdated(updatedProject);
     } catch (e: any) {
@@ -1322,47 +1362,179 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
-  const syncToBom = async () => {
-    try {
-      for (const it of items) {
-        await addBomItem(project.id, {
-          item: it.item,
-          unit: it.unit,
-          qty: num(it.qty),
-          unit_price_net: num(it.unit_price_net) * (1 - num(it.discount_pct) / 100),
-          notes: it.description ?? null,
-        });
-      }
-      alert("Angebotspositionen in die Stückliste übernommen.");
-    } catch (e: any) {
-      setErr(e?.message ?? "Übernahme in die Stückliste fehlgeschlagen.");
-    }
-  };
-
+  /* -------------------------- Druck: schönes A4 --------------------------- */
   const printOffer = () => {
-    const node = printableRef.current;
-    if (!node) return;
-    const win = window.open("", "PRINT", "height=800,width=600");
+    const win = window.open("", "PRINT", "height=900,width=700");
     if (!win) return;
-    win.document.write(`<html><head><title>Angebot ${project.code}</title>
+
+    const rows = items.map((it, i) => {
+      const line = num(it.qty) * (num(it.unit_price_net) * (1 - num(it.discount_pct) / 100));
+      return `<tr>
+        <td>${it.pos ?? i + 1}</td>
+        <td><div><strong>${escapeHtml(it.item)}</strong></div><div class="muted">${escapeHtml(it.description ?? "")}</div></td>
+        <td>${escapeHtml(it.unit ?? "")}</td>
+        <td class="r">${num(it.qty).toLocaleString()}</td>
+        <td class="r">${money(num(it.unit_price_net))}</td>
+        <td class="r">${num(it.discount_pct)}%</td>
+        <td class="r">${money(line)}</td>
+      </tr>`;
+    }).join("");
+
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Angebot ${project.code}</title>
       <style>
         @page { size: A4; margin: 16mm; }
-        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-        h1,h2,h3 { margin: 0; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { border: 1px solid #d1d5db; padding: 6px 8px; font-size: 12px; }
-        th { background: #f8fafc; text-align: left; }
-        .foot td { border-top: 2px solid #334155; }
-        .muted { color: #64748b; font-size: 12px; }
-        .totals td { border: none; }
+        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#0f172a; }
+        .head { display:flex; gap:16px; align-items:center; margin-bottom:10px; }
+        .head img { height: 42px; }
+        .head .meta { font-size:12px; color:#475569; line-height:1.35; }
+        h1 { margin: 6px 0 12px; font-size: 22px; }
+        .muted { color:#64748b; font-size: 12px; }
+        .note { border-left: 4px solid #ef4444; background:#fff1f2; padding:8px 12px; margin:12px 0; font-size:12px; }
+        table { width:100%; border-collapse:collapse; margin-top:12px; }
+        th, td { border:1px solid #e2e8f0; padding:6px 8px; font-size:12px; vertical-align:top; }
+        th { background:#f8fafc; text-align:left; }
+        td.r, th.r { text-align:right; }
+        .totals { margin-top:10px; width: 60%; margin-left:auto; }
+        .totals td { border:none; font-size:12px; padding:4px 0; }
+        .totals .line td { border-top:2px solid #334155; }
+        .block { margin-top:12px; }
+        .block h3 { margin:0 0 6px; font-size: 14px; }
+        footer { position:fixed; bottom:0; left:0; right:0; color:#94a3b8; font-size:10px; }
       </style>
-    </head><body>`);
-    win.document.write(node.innerHTML);
-    win.document.write("</body></html>");
+    </head><body>
+      <div class="head">
+        <img src="${COMPANY.logoPath}" alt="${COMPANY.name}">
+        <div class="meta">
+          <div><strong>${COMPANY.name}</strong></div>
+          <div>${COMPANY.addressLines.join(" • ")}</div>
+          <div>${COMPANY.email}</div>
+        </div>
+      </div>
+
+      <h1>Angebot</h1>
+      <div class="muted">${escapeHtml(project.code)} — ${escapeHtml(project.name)}</div>
+      <div class="muted">Datum: ${quote?.date ?? ""} • Gültig bis: ${quote?.valid_until ?? ""} • Angebots‑Nr.: ${quote?.number ?? ""}</div>
+
+      <div class="block">
+        <h3>Kunde</h3>
+        <div class="muted">${escapeHtml(project.customer_address ?? "")}</div>
+        <div class="muted">${escapeHtml(project.customer_email ?? "")} • ${escapeHtml(project.customer_phone ?? "")}</div>
+      </div>
+
+      <div class="note"><strong>WICHTIG:</strong> ${escapeHtml(IMPORTANT_NOTE)}</div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Pos.</th><th>Bezeichnung / Beschreibung</th><th>Einheit</th>
+            <th class="r">Menge</th><th class="r">EP netto</th><th class="r">Rabatt %</th><th class="r">Summe netto</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+
+      <table class="totals">
+        <tr><td>Zwischensumme (netto)</td><td class="r">${money(totals.sumNet)}</td></tr>
+        <tr><td>MwSt (${totals.taxRate.toFixed(0)} %)</td><td class="r">${money(totals.vat)}</td></tr>
+        <tr class="line"><td><strong>Gesamt (brutto)</strong></td><td class="r"><strong>${money(totals.gross)}</strong></td></tr>
+      </table>
+
+      <div class="block">
+        <h3>Zahlungsbedingungen</h3>
+        <div>50 % bei Auftragserteilung, 50 % nach Fertigstellung.</div>
+      </div>
+
+      ${quote?.notes ? `<div class="block"><h3>Hinweise</h3><div class="muted">${escapeHtml(quote.notes)}</div></div>` : ""}
+
+      <div class="block muted">Es gelten die beiliegenden Allgemeinen Geschäftsbedingungen (AGB).</div>
+
+      <footer>${COMPANY.name} • ${COMPANY.addressLines.join(" • ")} • ${COMPANY.email}</footer>
+    </body></html>`);
     win.document.close();
     win.focus();
     win.print();
     win.close();
+
+    function escapeHtml(s: string) {
+      return s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[m]!));
+    }
+  };
+
+  /* ----------------- PDF inkl. AGB: html2canvas + pdf-lib ----------------- */
+  const exportPdfWithAgb = async () => {
+    try {
+      // libs nur bei Bedarf laden (CDN)
+      await loadScriptOnce("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
+      await loadScriptOnce("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js");
+
+      const html2canvas = (window as any).html2canvas;
+      const PDFLib = (window as any).PDFLib as typeof import("pdf-lib");
+      if (!html2canvas || !PDFLib) throw new Error("PDF/Canvas-Bibliotheken konnten nicht geladen werden.");
+
+      const root = printableRef.current;
+      if (!root) throw new Error("Printbereich nicht gefunden.");
+
+      // A4 Breite in Pixel für 96dpi (html2canvas)
+      const A4_W = 794; // px (8.27in * 96)
+      root.style.width = `${A4_W}px`;
+
+      // 1) HTML -> Canvas (hohe Auflösung)
+      const canvas: HTMLCanvasElement = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
+      const fullW = canvas.width;
+      const fullH = canvas.height;
+
+      // 2) Canvas in A4-Häppchen schneiden und in PDF einfügen
+      const pdf = await PDFLib.PDFDocument.create();
+      const pageWpt = 595.28;  // A4 Breite (pt)
+      const pageHpt = 841.89;  // A4 Höhe  (pt)
+      const pageHpx = Math.floor((pageHpt / pageWpt) * fullW);
+
+      let y = 0;
+      const ctx = canvas.getContext("2d")!;
+      while (y < fullH) {
+        const sliceH = Math.min(pageHpx, fullH - y);
+        const slice = document.createElement("canvas");
+        slice.width = fullW;
+        slice.height = sliceH;
+        const sctx = slice.getContext("2d")!;
+        const imgData = ctx.getImageData(0, y, fullW, sliceH);
+        sctx.putImageData(imgData, 0, 0);
+
+        const dataUrl = slice.toDataURL("image/png");
+        const bytes = dataUrlToUint8Array(dataUrl);
+        const png = await pdf.embedPng(bytes);
+        const imgHpt = (sliceH / fullW) * pageWpt;
+
+        const page = pdf.addPage([pageWpt, pageHpt]);
+        page.drawImage(png, { x: 0, y: pageHpt - imgHpt, width: pageWpt, height: imgHpt });
+
+        y += sliceH;
+      }
+
+      // 3) AGB hinten anhängen (wenn vorhanden)
+      try {
+        const agbBytes = await fetch(AGB_PDF_PATH, { cache: "no-store" }).then((r) => r.arrayBuffer());
+        const agbDoc = await PDFLib.PDFDocument.load(agbBytes);
+        const agbPages = await pdf.copyPages(agbDoc, agbDoc.getPageIndices());
+        agbPages.forEach((p) => pdf.addPage(p));
+      } catch (e) {
+        console.warn("AGB konnten nicht angehängt werden:", e);
+      }
+
+      // 4) Download
+      const out = await pdf.save();
+      const blob = new Blob([out], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${project.code}_Angebot.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setErr(e?.message ?? "PDF-Export fehlgeschlagen.");
+    }
   };
 
   return (
@@ -1375,22 +1547,33 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
           <div className="text-sm text-slate-600">Angebotsdaten</div>
           <div className="grid gap-3">
             <Field label="Angebots‑Nr.">
-              <input className="rounded-xl border border-slate-300 px-3 py-2" value={quote?.number ?? ""} onChange={(e) => patchHeader({ number: e.target.value })} placeholder={`${project.code}-A1`} />
+              <input className="rounded-xl border border-slate-300 px-3 py-2"
+                     value={quote?.number ?? ""} onChange={(e) => patchHeader({ number: e.target.value })}
+                     placeholder={`${project.code}-A1`} />
             </Field>
             <div className="grid gap-3 md:grid-cols-2">
               <Field label="Datum">
-                <input type="date" className="rounded-xl border border-slate-300 px-3 py-2" value={quote?.date ?? ""} onChange={(e) => patchHeader({ date: e.target.value })} />
+                <input type="date" className="rounded-xl border border-slate-300 px-3 py-2"
+                       value={quote?.date ?? ""} onChange={(e) => patchHeader({ date: e.target.value })} />
               </Field>
               <Field label="Gültig bis">
-                <input type="date" className="rounded-xl border border-slate-300 px-3 py-2" value={quote?.valid_until ?? ""} onChange={(e) => patchHeader({ valid_until: e.target.value })} />
+                <input type="date" className="rounded-xl border border-slate-300 px-3 py-2"
+                       value={quote?.valid_until ?? ""} onChange={(e) => patchHeader({ valid_until: e.target.value })} />
               </Field>
             </div>
             <Field label="MwSt‑Satz in %">
               <NumberInput value={num(quote?.tax_rate ?? 19)} onChange={(v) => patchHeader({ tax_rate: v })} />
             </Field>
             <Field label="Notizen">
-              <textarea className="rounded-xl border border-slate-300 px-3 py-2" rows={3} value={quote?.notes ?? ""} onChange={(e) => patchHeader({ notes: e.target.value })} />
+              <textarea className="rounded-xl border border-slate-300 px-3 py-2" rows={3}
+                        value={quote?.notes ?? ""} onChange={(e) => patchHeader({ notes: e.target.value })} />
             </Field>
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+              <strong>Wichtig:</strong> {IMPORTANT_NOTE}
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+              <strong>Zahlungsbedingungen:</strong> 50 % bei Auftragserteilung, 50 % nach Fertigstellung.
+            </div>
           </div>
         </div>
 
@@ -1400,10 +1583,14 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
           <KPI label="Zwischensumme (netto)">{money(totals.sumNet)}</KPI>
           <KPI label={`MwSt (${totals.taxRate.toFixed(0)} %)`}>{money(totals.vat)}</KPI>
           <KPI label="Gesamt (brutto)">{money(totals.gross)}</KPI>
-          <div className="flex items-center gap-3 pt-2">
+          <div className="flex flex-wrap items-center gap-3 pt-2">
             <button className="rounded-xl bg-blue-600 px-3 py-2 text-white" onClick={saveAndSync}>Speichern</button>
-            <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={syncToBom}>In Stückliste übernehmen</button>
+            <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={createItem}>Position hinzufügen</button>
             <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={printOffer}>Drucken / PDF</button>
+            <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={exportPdfWithAgb}>Exportieren (PDF inkl. AGB)</button>
+          </div>
+          <div className="text-xs text-slate-500 pt-1">
+            Tipp: „Exportieren (PDF inkl. AGB)“ erzeugt ein zusammenhängendes PDF (Angebot + AGB).
           </div>
         </div>
       </div>
@@ -1431,18 +1618,21 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
               items.map((it, idx) => {
                 const lineNet = num(it.qty) * (num(it.unit_price_net) * (1 - num(it.discount_pct) / 100));
                 return (
-                  <tr key={it.id} className="border-top border-slate-100">
+                  <tr key={it.id} className="border-t border-slate-100">
                     <td className="px-4 py-2" style={{ width: 60 }}>
                       <NumberInput small value={num(it.pos ?? idx + 1)} onChange={(v) => patchItem(it.id, { pos: v })} />
                     </td>
                     <td className="px-4 py-2" style={{ minWidth: 220 }}>
-                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.item} onChange={(e) => patchItem(it.id, { item: e.target.value })} placeholder="Artikel / Leistung" />
+                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.item}
+                             onChange={(e) => patchItem(it.id, { item: e.target.value })} placeholder="Artikel / Leistung" />
                     </td>
                     <td className="px-4 py-2" style={{ minWidth: 260 }}>
-                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.description ?? ""} onChange={(e) => patchItem(it.id, { description: e.target.value })} placeholder="Beschreibung" />
+                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.description ?? ""}
+                             onChange={(e) => patchItem(it.id, { description: e.target.value })} placeholder="Beschreibung" />
                     </td>
                     <td className="px-4 py-2" style={{ width: 100 }}>
-                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.unit ?? ""} onChange={(e) => patchItem(it.id, { unit: e.target.value })} placeholder="Stk / m / h" />
+                      <input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.unit ?? ""}
+                             onChange={(e) => patchItem(it.id, { unit: e.target.value })} placeholder="Stk / m / h" />
                     </td>
                     <td className="px-4 py-2 text-right" style={{ width: 120 }}>
                       <NumberInput small value={num(it.qty)} onChange={(v) => patchItem(it.id, { qty: v })} />
@@ -1467,55 +1657,98 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
         </table>
       </div>
 
-      <div className="flex items-center gap-3">
-        <button className="rounded-xl bg-blue-600 px-3 py-2 text-white" onClick={createItem}>Position hinzufügen</button>
-        <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={reload}>Aktualisieren</button>
-      </div>
-
-      {/* Druckansicht (wird in neues Fenster geschrieben) */}
-      <div ref={printableRef} className="hidden print:block">
-        <div>
-          <h1>Angebot</h1>
-          <p className="muted">{project.code} – {project.name}</p>
-          <hr />
-          <div className="muted">
-            <div>Kunde:</div>
-            <div>{project.customer_address ?? ""}</div>
-            <div>{project.customer_email ?? ""} • {project.customer_phone ?? ""}</div>
+      {/* Unsichtbarer Render-Bereich für PDF (aber NICHT display:none setzen!) */}
+      <div
+        ref={printableRef}
+        className="fixed -left-[10000px] top-0 bg-white text-black"
+        style={{ width: 794 }}
+      >
+        {/* Kopf */}
+        <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 8 }}>
+          <img src={COMPANY.logoPath} alt={COMPANY.name} style={{ height: 42 }} />
+          <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.35 }}>
+            <div><strong>{COMPANY.name}</strong></div>
+            <div>{COMPANY.addressLines.join(" • ")}</div>
+            <div>{COMPANY.email}</div>
           </div>
-          <p className="muted">Datum: {quote?.date ?? ""} • Gültig bis: {quote?.valid_until ?? ""} • Angebots‑Nr.: {quote?.number ?? ""}</p>
+        </div>
 
-          <table>
-            <thead>
-              <tr>
-                <th>Pos.</th><th>Bezeichnung</th><th>Beschreibung</th><th>Einheit</th><th style={{textAlign:"right"}}>Menge</th><th style={{textAlign:"right"}}>EP netto</th><th style={{textAlign:"right"}}>Rabatt %</th><th style={{textAlign:"right"}}>Summe netto</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((it, i) => {
-                const lineNet = num(it.qty) * (num(it.unit_price_net) * (1 - num(it.discount_pct) / 100));
-                return (
-                  <tr key={it.id}>
-                    <td>{it.pos ?? i + 1}</td>
-                    <td>{it.item}</td>
-                    <td>{it.description ?? ""}</td>
-                    <td>{it.unit ?? ""}</td>
-                    <td style={{ textAlign: "right" }}>{num(it.qty).toLocaleString()}</td>
-                    <td style={{ textAlign: "right" }}>{money(num(it.unit_price_net))}</td>
-                    <td style={{ textAlign: "right" }}>{num(it.discount_pct)}%</td>
-                    <td style={{ textAlign: "right" }}>{money(lineNet)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="foot"><td colSpan={7}>Zwischensumme</td><td style={{ textAlign: "right" }}>{money(totals.sumNet)}</td></tr>
-              <tr><td colSpan={7}>MwSt ({totals.taxRate.toFixed(0)} %)</td><td style={{ textAlign: "right" }}>{money(totals.vat)}</td></tr>
-              <tr><td colSpan={7}><strong>Gesamt</strong></td><td style={{ textAlign: "right" }}><strong>{money(totals.gross)}</strong></td></tr>
-            </tfoot>
-          </table>
+        <h2 style={{ margin: "6px 0 8px", fontSize: 20 }}>Angebot</h2>
+        <div style={{ color: "#64748b", fontSize: 12 }}>
+          {project.code} — {project.name}
+        </div>
+        <div style={{ color: "#64748b", fontSize: 12 }}>
+          Datum: {quote?.date ?? ""} • Gültig bis: {quote?.valid_until ?? ""} • Angebots‑Nr.: {quote?.number ?? ""}
+        </div>
 
-          {quote?.notes && (<p className="muted" style={{ marginTop: "12px" }}>{quote.notes}</p>)}
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, color: "#0f172a", marginBottom: 4 }}><strong>Kunde</strong></div>
+          <div style={{ color: "#64748b", fontSize: 12 }}>{project.customer_address ?? ""}</div>
+          <div style={{ color: "#64748b", fontSize: 12 }}>{project.customer_email ?? ""} • {project.customer_phone ?? ""}</div>
+        </div>
+
+        <div style={{ borderLeft: "4px solid #ef4444", background: "#fff1f2", padding: "8px 12px", margin: "10px 0", fontSize: 12 }}>
+          <strong>WICHTIG:</strong> {IMPORTANT_NOTE}
+        </div>
+
+        {/* Tabelle */}
+        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8, fontSize: 12 }}>
+          <thead>
+            <tr>
+              {["Pos.","Bezeichnung / Beschreibung","Einheit","Menge","EP netto","Rabatt %","Summe netto"].map((h, i) => (
+                <th key={i} style={{ border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: i>=3 ? "right" : "left" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((it, i) => {
+              const line = num(it.qty) * (num(it.unit_price_net) * (1 - num(it.discount_pct) / 100));
+              return (
+                <tr key={it.id}>
+                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px" }}>{it.pos ?? i + 1}</td>
+                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px" }}>
+                    <div><strong>{it.item}</strong></div>
+                    <div style={{ color: "#64748b" }}>{it.description ?? ""}</div>
+                  </td>
+                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px" }}>{it.unit ?? ""}</td>
+                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{num(it.qty).toLocaleString()}</td>
+                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{money(num(it.unit_price_net))}</td>
+                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{num(it.discount_pct)}%</td>
+                  <td style={{ border: "1px solid #e2e8f0", padding: "6px 8px", textAlign: "right" }}>{money(line)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {/* Summen */}
+        <div style={{ width: "60%", marginLeft: "auto", marginTop: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+            <div>Zwischensumme (netto)</div><div>{money(totals.sumNet)}</div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+            <div>MwSt ({totals.taxRate.toFixed(0)} %)</div><div>{money(totals.vat)}</div>
+          </div>
+          <div style={{ borderTop: "2px solid #334155", marginTop: 6, paddingTop: 6, display: "flex", justifyContent: "space-between", fontWeight: 600, fontSize: 12 }}>
+            <div>Gesamt (brutto)</div><div>{money(totals.gross)}</div>
+          </div>
+        </div>
+
+        {/* Zahlungsbed. + Notizen */}
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Zahlungsbedingungen</div>
+          <div style={{ fontSize: 12 }}>50 % bei Auftragserteilung, 50 % nach Fertigstellung.</div>
+        </div>
+
+        {quote?.notes && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Hinweise</div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>{quote.notes}</div>
+          </div>
+        )}
+
+        <div style={{ color: "#64748b", fontSize: 12, marginTop: 8 }}>
+          Es gelten die beiliegenden Allgemeinen Geschäftsbedingungen (AGB).
         </div>
       </div>
     </div>
