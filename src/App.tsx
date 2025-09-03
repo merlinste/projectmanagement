@@ -1289,12 +1289,32 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Rabattspalte standardmäßig aus
+  // Rabattspalte standardmäßig ausblendbar
   const [showDiscount, setShowDiscount] = useState(false);
 
-  // Offscreen-Renderbereich für PDF
+  // Offscreen-Renderbereich für den PDF-Export
   const printableRef = useRef<HTMLDivElement>(null);
 
+  // ---------- Styles (MUSS vor dem return stehen!) ----------
+  const thStyle: React.CSSProperties = {
+    border: "1px solid #e2e8f0",
+    padding: "6px 8px",
+    background: "#f8fafc",
+    textAlign: "left",
+    fontSize: 12,
+    verticalAlign: "top",
+  };
+  const thRight: React.CSSProperties = { ...thStyle, textAlign: "right" };
+  const tdStyle: React.CSSProperties = {
+    border: "1px solid #e2e8f0",
+    padding: "6px 8px",
+    fontSize: 12,
+    verticalAlign: "top",
+  };
+  const tdRight: React.CSSProperties = { ...tdStyle, textAlign: "right" };
+  const sumRow: React.CSSProperties = { display: "flex", justifyContent: "space-between", fontSize: 12 };
+
+  // ---------- Hilfen ----------
   const defaultQuoteNumber = () => `${project.code}-A1`;
 
   const reload = async () => {
@@ -1364,7 +1384,6 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     try { await deleteQuoteItem(id); } catch { reload(); }
   };
 
-  // Summe ins Projekt übernehmen
   const saveAndSync = async () => {
     try {
       setErr(null);
@@ -1375,7 +1394,6 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
-  // Angebotspositionen in BOM übernehmen
   const syncToBom = async () => {
     try {
       for (const it of items) {
@@ -1394,7 +1412,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
-  /* ----------------------- Druck (Browser): sauberer Rand ----------------------- */
+  // ---------- Druck (Browser) ----------
   const printOffer = () => {
     const win = window.open("", "_blank");
     if (!win) return;
@@ -1419,9 +1437,6 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
         html, body { margin: 0; }
         body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#0f172a; }
 
-        .page { box-sizing: border-box; }
-        .inner { padding: 0 0; }
-
         h1 { margin: 6px 0 12px; font-size: 22px; }
         .muted { color:#64748b; font-size: 12px; }
         .head { display:flex; gap:16px; align-items:center; margin-bottom:10px; padding: 0 16mm; }
@@ -1444,70 +1459,65 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
 
         .block { margin:12px 16mm 0; }
         .block h3 { margin:0 0 6px; font-size: 14px; }
-        .block .body { font-size:12px; } /* <-- Zahlungsbedingungen-Text fix auf 12px */
+        .block .body { font-size:12px; } /* Zahlungsbedingungen-Text fix auf 12px */
 
         footer { position:fixed; bottom:0; left:0; right:0; color:#94a3b8; font-size:10px; padding: 0 16mm; }
       </style>
     </head><body>
-      <div class="page">
-        <div class="inner">
-          <div class="head">
-            <img src="${COMPANY.logoPath}" alt="${COMPANY.name}">
-            <div class="meta">
-              <div><strong>${COMPANY.name}</strong></div>
-              <div>${COMPANY.addressLines.join(" • ")}</div>
-              <div>${COMPANY.email}</div>
-            </div>
-          </div>
-
-          <div style="padding: 0 16mm">
-            <h1>Angebot</h1>
-            <div class="muted">${escapeHtml(project.code)} — ${escapeHtml(project.name)}</div>
-            <div class="muted">Datum: ${quote?.date ?? ""} • Gültig bis: ${quote?.valid_until ?? ""} • Angebots‑Nr.: ${quote?.number ?? ""}</div>
-
-            <div style="margin-top:10px">
-              <h3 style="margin:0 0 6px; font-size:14px">Kunde</h3>
-              <div class="muted">${escapeHtml(project.customer_address ?? "")}</div>
-              <div class="muted">${escapeHtml(project.customer_email ?? "")} • ${escapeHtml(project.customer_phone ?? "")}</div>
-            </div>
-          </div>
-
-          <div class="note"><strong>WICHTIG:</strong><span>${escapeHtml(IMPORTANT_NOTE)}</span></div>
-
-          <div class="tableWrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Pos.</th><th>Bezeichnung / Beschreibung</th><th>Einheit</th>
-                  <th class="r">Menge</th><th class="r">EP netto</th>
-                  ${showDiscount ? `<th class="r">Rabatt %</th>` : ""}
-                  <th class="r">Summe netto</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-
-          <div class="totals">
-            <table>
-              <tr><td>Zwischensumme (netto)</td><td class="r">${money(totals.sumNet)}</td></tr>
-              <tr><td>MwSt (${totals.taxRate.toFixed(0)} %)</td><td class="r">${money(totals.vat)}</td></tr>
-              <tr class="line"><td><strong>Gesamt (brutto)</strong></td><td class="r"><strong>${money(totals.gross)}</strong></td></tr>
-            </table>
-          </div>
-
-          <div class="block">
-            <h3>Zahlungsbedingungen</h3>
-            <div class="body">50 % bei Auftragserteilung, 50 % nach Fertigstellung.</div>
-          </div>
-
-          ${quote?.notes ? `<div class="block"><h3>Hinweise</h3><div class="muted body">${escapeHtml(quote.notes)}</div></div>` : ""}
-
-          <div class="block muted body">Es gelten die beiliegenden Allgemeinen Geschäftsbedingungen (AGB).</div>
+      <div class="head">
+        <img src="${COMPANY.logoPath}" alt="${COMPANY.name}">
+        <div class="meta">
+          <div><strong>${COMPANY.name}</strong></div>
+          <div>${COMPANY.addressLines.join(" • ")}</div>
+          <div>${COMPANY.email}</div>
         </div>
-
-        <footer>${COMPANY.name} • ${COMPANY.addressLines.join(" • ")} • ${COMPANY.email}</footer>
       </div>
+
+      <div style="padding: 0 16mm">
+        <h1>Angebot</h1>
+        <div class="muted">${escapeHtml(project.code)} — ${escapeHtml(project.name)}</div>
+        <div class="muted">Datum: ${quote?.date ?? ""} • Gültig bis: ${quote?.valid_until ?? ""} • Angebots‑Nr.: ${quote?.number ?? ""}</div>
+
+        <div style="margin-top:10px">
+          <h3 style="margin:0 0 6px; font-size:14px">Kunde</h3>
+          <div class="muted">${escapeHtml(project.customer_address ?? "")}</div>
+          <div class="muted">${escapeHtml(project.customer_email ?? "")} • ${escapeHtml(project.customer_phone ?? "")}</div>
+        </div>
+      </div>
+
+      <div class="note"><strong>WICHTIG:</strong><span>${escapeHtml(IMPORTANT_NOTE)}</span></div>
+
+      <div class="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Pos.</th><th>Bezeichnung / Beschreibung</th><th>Einheit</th>
+              <th class="r">Menge</th><th class="r">EP netto</th>
+              ${showDiscount ? `<th class="r">Rabatt %</th>` : ""}
+              <th class="r">Summe netto</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+
+      <div class="totals">
+        <table>
+          <tr><td>Zwischensumme (netto)</td><td class="r">${money(totals.sumNet)}</td></tr>
+        <tr><td>MwSt (${totals.taxRate.toFixed(0)} %)</td><td class="r">${money(totals.vat)}</td></tr>
+          <tr class="line"><td><strong>Gesamt (brutto)</strong></td><td class="r"><strong>${money(totals.gross)}</strong></td></tr>
+        </table>
+      </div>
+
+      <div class="block">
+        <h3>Zahlungsbedingungen</h3>
+        <div class="body">50 % bei Auftragserteilung, 50 % nach Fertigstellung.</div>
+      </div>
+
+      ${quote?.notes ? `<div class="block"><h3>Hinweise</h3><div class="muted body">${escapeHtml(quote.notes)}</div></div>` : ""}
+      <div class="block muted body">Es gelten die beiliegenden Allgemeinen Geschäftsbedingungen (AGB).</div>
+
+      <footer>${COMPANY.name} • ${COMPANY.addressLines.join(" • ")} • ${COMPANY.email}</footer>
     </body></html>`);
 
     win.document.close();
@@ -1518,7 +1528,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
-  /* ------------------ PDF-Export (inkl. AGB): Ränder + Typografie sync ------------------ */
+  // ---------- PDF-Export (inkl. AGB) ----------
   const exportPdfWithAgb = async () => {
     try {
       await loadScriptOnce("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
@@ -1531,7 +1541,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
       const root = printableRef.current;
       if (!root) throw new Error("Printbereich nicht gefunden.");
 
-      // A4 Breite (96dpi). Innenrand oben/unten + links/rechts -> nichts wird abgeschnitten.
+      // A4 Breite (96dpi) + Innenabstand; verhindert abgeschnittene Inhalte
       const A4_W = 794;
       root.style.width = `${A4_W}px`;
 
@@ -1543,6 +1553,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
 
       const fullW = canvas.width;
       const fullH = canvas.height;
+
       const pdf = await PDFLib.PDFDocument.create();
       const pageWpt = 595.28, pageHpt = 841.89;
       const pageHpx = Math.floor((pageHpt / pageWpt) * fullW);
@@ -1553,8 +1564,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
         const sliceH = Math.min(pageHpx, fullH - y);
         const slice = document.createElement("canvas");
         slice.width = fullW; slice.height = sliceH;
-        const sctx = slice.getContext("2d")!;
-        sctx.putImageData(ctx.getImageData(0, y, fullW, sliceH), 0, 0);
+        slice.getContext("2d")!.putImageData(ctx.getImageData(0, y, fullW, sliceH), 0, 0);
 
         const bytes = dataUrlToUint8Array(slice.toDataURL("image/png"));
         const png = await pdf.embedPng(bytes);
@@ -1565,7 +1575,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
         y += sliceH;
       }
 
-      // AGB anhängen (falls vorhanden)
+      // AGB hinten anhängen (aus /public/AGB_Stellwag_Klimatechnik_v2.pdf)
       try {
         const agbBytes = await fetch(AGB_PDF_PATH, { cache: "no-store" }).then((r) => r.arrayBuffer());
         const agbDoc = await PDFLib.PDFDocument.load(agbBytes);
@@ -1587,6 +1597,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
     }
   };
 
+  // ---------- Render ----------
   return (
     <div className="space-y-4">
       {err && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</div>}
@@ -1713,7 +1724,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
         </table>
       </div>
 
-      {/* PDF-Render: gleiches Layout wie oben, mit Innenrand links/rechts und sauberer Typografie */}
+      {/* PDF-Renderbereich (gleiche Typografie, mit Innenrand) */}
       <div
         ref={printableRef}
         className="fixed -left-[10000px] top-0 bg-white text-black"
@@ -1751,7 +1762,7 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
           <strong>WICHTIG:</strong><span>{IMPORTANT_NOTE}</span>
         </div>
 
-        {/* Tabelle mit linkem/rechtem Innenrand */}
+        {/* Tabelle mit Rändern */}
         <div style={{ padding: "0 16mm" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
             <thead>
@@ -1813,16 +1824,6 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
       </div>
     </div>
   );
-
-  // --- Styles für PDF-Tabelle (vermeidet Wiederholung) ---
-  function thBase() {
-    return { border: "1px solid #e2e8f0", padding: "6px 8px", background: "#f8fafc", textAlign: "left" as const, fontSize: 12 };
-  }
-  const thStyle = thBase();
-  const thRight = { ...thBase(), textAlign: "right" as const };
-  const tdStyle = { border: "1px solid #e2e8f0", padding: "6px 8px", fontSize: 12 };
-  const tdRight = { ...tdStyle, textAlign: "right" as const };
-  const sumRow = { display: "flex", justifyContent: "space-between", fontSize: 12 } as const;
 }
 
 /* ============================== UI-Helfer ================================= */
