@@ -1651,6 +1651,29 @@ function AuthView() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const startMicrosoftLogin = async () => {
+    try {
+      setErr(null);
+      setBusy(true);
+      // Azure (Microsoft) OAuth – E-Mail-Scope zwingend; optional redirectTo
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "azure",
+        options: {
+          scopes: "email",
+          redirectTo: window.location.origin, // muss in Supabase → Auth → Redirect URLs erlaubt sein
+        },
+      });
+      // Bei Erfolg übernimmt der Browser die Redirects; busy bleibt gesetzt.
+      if (error) {
+        setErr(error.message);
+        setBusy(false);
+      }
+    } catch (e: any) {
+      setErr(e?.message ?? "Anmeldung fehlgeschlagen.");
+      setBusy(false);
+    }
+  };
+
   const sendMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
@@ -1660,22 +1683,39 @@ function AuthView() {
       options: { emailRedirectTo: window.location.origin },
     });
     setBusy(false);
-    if (error) {
-      setErr(error.message);
-    } else {
-      setSent(true);
-    }
+    if (error) setErr(error.message);
+    else setSent(true);
   };
 
   return (
     <div className="mx-auto max-w-md">
       <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
         <div className="text-base text-slate-700">Anmelden</div>
+
         {err && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
             {err}
           </div>
         )}
+
+        {/* Microsoft-Login */}
+        <button
+          type="button"
+          onClick={startMicrosoftLogin}
+          disabled={busy}
+          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+        >
+          Mit Microsoft anmelden
+        </button>
+
+        {/* Trenner */}
+        <div className="flex items-center gap-3">
+          <div className="h-px flex-1 bg-slate-200" />
+          <span className="text-xs text-slate-500">oder</span>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        {/* Magic-Link als Alternative */}
         {sent ? (
           <div className="text-sm text-slate-600">
             Magic‑Link gesendet. Prüfe dein Postfach und klicke den Link, um dich anzumelden.
@@ -1703,9 +1743,7 @@ function AuthView() {
           </form>
         )}
       </div>
-      <div className="mt-4 text-center text-xs text-slate-500">
-        Hinweis: In Supabase unter Authentication → URL configuration die Domain dieser App als Redirect erlauben.
-      </div>
+      {/* Der frühere Hinweistext wurde entfernt */}
     </div>
   );
 }
