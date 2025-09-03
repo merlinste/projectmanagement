@@ -716,8 +716,13 @@ function ProjectDetail(props: {
         <OverviewPanel project={project} onProjectUpdated={onProjectUpdated} />
       )}
       {active === "profit" && (
-        <ProfitabilityPanel project={project} bom={bom} refreshingBom={bomLoading} />
-      )}
+  <ProfitabilityPanel
+    project={project}
+    bom={bom}
+    refreshingBom={bomLoading}
+    onProjectUpdated={onProjectUpdated}
+  />
+)}
       {active === "bom" && (
         <BomPanel
           project={project}
@@ -909,10 +914,14 @@ function ProfitabilityPanel(props: {
   project: Project;
   bom: BomItem[];
   refreshingBom: boolean;
+  onProjectUpdated: (p: Project) => void;
 }) {
-  const { project, bom, refreshingBom } = props;
+  const { project, bom, refreshingBom, onProjectUpdated } = props;
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Formularzustand aus dem Projekt ableiten und bei Projektwechsel synchron halten
   const [fin, setFin] = useState({
     quote_total_net: project.quote_total_net ?? 0,
     hourly_rate: project.hourly_rate ?? 0,
@@ -923,7 +932,27 @@ function ProfitabilityPanel(props: {
     payments_received: project.payments_received ?? 0,
   });
 
-  // Zeitkosten aus Erfassung
+  useEffect(() => {
+    setFin({
+      quote_total_net: project.quote_total_net ?? 0,
+      hourly_rate: project.hourly_rate ?? 0,
+      hours_planned: project.hours_planned ?? 0,
+      hours_actual: project.hours_actual ?? 0,
+      other_costs: project.other_costs ?? 0,
+      invoiced_net: project.invoiced_net ?? 0,
+      payments_received: project.payments_received ?? 0,
+    });
+  }, [
+    project.quote_total_net,
+    project.hourly_rate,
+    project.hours_planned,
+    project.hours_actual,
+    project.other_costs,
+    project.invoiced_net,
+    project.payments_received,
+  ]);
+
+  // Zeitkosten aus Stundenerfassung
   const [timeSum, setTimeSum] = useState<{ hours: number; cost: number }>({ hours: 0, cost: 0 });
   useEffect(() => {
     let cancelled = false;
@@ -940,9 +969,7 @@ function ProfitabilityPanel(props: {
         // noop
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [project.id, project.hourly_rate]);
 
   const bomTotal = useMemo(
@@ -950,28 +977,47 @@ function ProfitabilityPanel(props: {
     [bom]
   );
 
-  const plannedCost = num(fin.hours_planned) * num(fin.hourly_rate) + num(bomTotal) + num(fin.other_costs);
-  const actualCost = num(timeSum.cost) + num(bomTotal) + num(fin.other_costs);
+  const plannedCost   = num(fin.hours_planned) * num(fin.hourly_rate) + num(bomTotal) + num(fin.other_costs);
+  const actualCost    = num(timeSum.cost) + num(bomTotal) + num(fin.other_costs);
   const plannedProfit = num(fin.quote_total_net) - plannedCost;
-  const actualProfit = num(fin.invoiced_net) - actualCost;
+  const actualProfit  = num(fin.invoiced_net) - actualCost;
 
   const plannedMargin = num(fin.quote_total_net) ? (plannedProfit / num(fin.quote_total_net)) * 100 : 0;
-  const actualMargin = num(fin.invoiced_net) ? (actualProfit / num(fin.invoiced_net)) * 100 : 0;
+  const actualMargin  = num(fin.invoiced_net)    ? (actualProfit  / num(fin.invoiced_net))    * 100 : 0;
+
+  useEffect(() => {
+    if (!saved) return;
+    const t = setTimeout(() => setSaved(false), 1500);
+    return () => clearTimeout(t);
+  }, [saved]);
 
   const handleSave = async () => {
     try {
       setErr(null);
       setSaving(true);
       const patch: Partial<Project> = {
-        quote_total_net: num(fin.quote_total_net),
-        hourly_rate: num(fin.hourly_rate),
-        hours_planned: num(fin.hours_planned),
-        hours_actual: num(fin.hours_actual),
-        other_costs: num(fin.other_costs),
-        invoiced_net: num(fin.invoiced_net),
+        quote_total_net:   num(fin.quote_total_net),
+        hourly_rate:       num(fin.hourly_rate),
+        hours_planned:     num(fin.hours_planned),
+        hours_actual:      num(fin.hours_actual),
+        other_costs:       num(fin.other_costs),
+        invoiced_net:      num(fin.invoiced_net),
         payments_received: num(fin.payments_received),
       };
-      await updateProject(project.id, patch);
+      const updated = await updateProject(project.id, patch);
+
+      // lokalen Formularzustand und Parent-State aktualisieren
+      setFin({
+        quote_total_net:   updated.quote_total_net   ?? 0,
+        hourly_rate:       updated.hourly_rate       ?? 0,
+        hours_planned:     updated.hours_planned     ?? 0,
+        hours_actual:      updated.hours_actual      ?? 0,
+        other_costs:       updated.other_costs       ?? 0,
+        invoiced_net:      updated.invoiced_net      ?? 0,
+        payments_received: updated.payments_received ?? 0,
+      });
+      onProjectUpdated(updated);
+      setSaved(true);
     } catch (e: any) {
       console.error(e);
       setErr(e?.message ?? "Konnte Finanzdaten nicht speichern.");
@@ -993,49 +1039,28 @@ function ProfitabilityPanel(props: {
           <div className="text-sm text-slate-600">Plan / IST</div>
           <div className="grid gap-3">
             <Field label="Angebot (netto)">
-              <NumberInput
-                value={fin.quote_total_net}
-                onChange={(v) => setFin((s) => ({ ...s, quote_total_net: v }))}
-              />
+              <NumberInput value={fin.quote_total_net} onChange={(v) => setFin((s) => ({ ...s, quote_total_net: v }))} />
             </Field>
             <div className="grid gap-3 md:grid-cols-3">
               <Field label="Stundensatz">
-                <NumberInput
-                  value={fin.hourly_rate}
-                  onChange={(v) => setFin((s) => ({ ...s, hourly_rate: v }))}
-                />
+                <NumberInput value={fin.hourly_rate} onChange={(v) => setFin((s) => ({ ...s, hourly_rate: v }))} />
               </Field>
               <Field label="Stunden geplant">
-                <NumberInput
-                  value={fin.hours_planned}
-                  onChange={(v) => setFin((s) => ({ ...s, hours_planned: v }))}
-                />
+                <NumberInput value={fin.hours_planned} onChange={(v) => setFin((s) => ({ ...s, hours_planned: v }))} />
               </Field>
               <Field label="Stunden IST (manuell)">
-                <NumberInput
-                  value={fin.hours_actual}
-                  onChange={(v) => setFin((s) => ({ ...s, hours_actual: v }))}
-                />
+                <NumberInput value={fin.hours_actual} onChange={(v) => setFin((s) => ({ ...s, hours_actual: v }))} />
               </Field>
             </div>
             <Field label="Sonstige Kosten">
-              <NumberInput
-                value={fin.other_costs}
-                onChange={(v) => setFin((s) => ({ ...s, other_costs: v }))}
-              />
+              <NumberInput value={fin.other_costs} onChange={(v) => setFin((s) => ({ ...s, other_costs: v }))} />
             </Field>
             <div className="grid gap-3 md:grid-cols-2">
               <Field label="Rechnungen (netto)">
-                <NumberInput
-                  value={fin.invoiced_net}
-                  onChange={(v) => setFin((s) => ({ ...s, invoiced_net: v }))}
-                />
+                <NumberInput value={fin.invoiced_net} onChange={(v) => setFin((s) => ({ ...s, invoiced_net: v }))} />
               </Field>
               <Field label="Zahlungseingänge">
-                <NumberInput
-                  value={fin.payments_received}
-                  onChange={(v) => setFin((s) => ({ ...s, payments_received: v }))}
-                />
+                <NumberInput value={fin.payments_received} onChange={(v) => setFin((s) => ({ ...s, payments_received: v }))} />
               </Field>
             </div>
           </div>
@@ -1044,9 +1069,7 @@ function ProfitabilityPanel(props: {
         <div className="rounded-xl border border-slate-200 bg-white p-4 md:p-6 space-y-3">
           <div className="text-sm text-slate-600 flex items-center gap-2">
             Kennzahlen
-            {refreshingBom && (
-              <span className="text-xs text-slate-500">Stückliste wird aktualisiert …</span>
-            )}
+            {refreshingBom && <span className="text-xs text-slate-500">Stückliste wird aktualisiert …</span>}
           </div>
           <KPI label="Zeit aus Erfassung (h)">{num(timeSum.hours).toFixed(2)}</KPI>
           <KPI label="Zeitkosten (Erfassung)">{money(timeSum.cost)}</KPI>
@@ -1054,27 +1077,18 @@ function ProfitabilityPanel(props: {
           <KPI label="Plan-Kosten (Std geplant + BOM + sonst.)">{money(plannedCost)}</KPI>
           <KPI label="IST-Kosten (ZE + BOM + sonst.)">{money(actualCost)}</KPI>
           <KPI label="Plan-Gewinn">{money(plannedProfit)}</KPI>
-          <KPI label="Plan-Marge">
-            {isFinite(plannedMargin) ? plannedMargin.toFixed(1) + " %" : "—"}
-          </KPI>
+          <KPI label="Plan-Marge">{isFinite(plannedMargin) ? plannedMargin.toFixed(1) + " %" : "—"}</KPI>
           <KPI label="IST-Gewinn">{money(actualProfit)}</KPI>
-          <KPI label="IST-Marge">
-            {isFinite(actualMargin) ? actualMargin.toFixed(1) + " %" : "—"}
-          </KPI>
-          <KPI label="Offen (Rechnung − Zahlung)">
-            {money(num(fin.invoiced_net) - num(fin.payments_received))}
-          </KPI>
+          <KPI label="IST-Marge">{isFinite(actualMargin) ? actualMargin.toFixed(1) + " %" : "—"}</KPI>
+          <KPI label="Offen (Rechnung − Zahlung)">{money(num(fin.invoiced_net) - num(fin.payments_received))}</KPI>
         </div>
       </div>
 
       <div className="flex items-center gap-3">
-        <button
-          className="rounded-xl bg-blue-600 px-3 py-2 text-white disabled:opacity-50"
-          onClick={handleSave}
-          disabled={saving}
-        >
+        <button className="rounded-xl bg-blue-600 px-3 py-2 text-white disabled:opacity-50" onClick={handleSave} disabled={saving}>
           {saving ? "Speichern …" : "Speichern"}
         </button>
+        {saved && <span className="text-sm text-slate-500">Gespeichert</span>}
       </div>
     </div>
   );
