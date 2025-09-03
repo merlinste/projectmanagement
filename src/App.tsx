@@ -75,7 +75,7 @@ const formatDate = (iso?: string | null) => {
   return d.toLocaleDateString();
 };
 
-const STATUS_OPTIONS = ["neu", "in_bearbeitung", "pausiert", "abgeschlossen"] as const;
+const STATUS_OPTIONS = ["Neu","Angebot","Beauftragt","Montage","Abgerechnet","Abgeschlossen","Nicht Beauftragt"] as const;
 
 /* -------------------- Datenfunktionen: Projekte --------------------------- */
 async function fetchProjects(): Promise<Project[]> {
@@ -99,6 +99,41 @@ async function updateProject(id: string, patch: Partial<Project>): Promise<Proje
   if (error) throw error;
   return data as Project;
 }
+
+
+
+/** Compute next project code as YYYY-XXX (3 digits), based on existing projects for current year */
+async function getNextProjectCode(): Promise<string> {
+  const now = new Date();
+  const year = now.getFullYear();
+  const prefix = `${year}-`;
+  // Fetch existing codes for current year; limit reasonable
+  const { data, error } = await supabase
+    .from("projects")
+    .select("code")
+    .ilike("code", `${year}-%`)
+    .limit(1000);
+  if (error) {
+    // Fallback: return first code if query fails
+    const first = `${year}-001`;
+    return first;
+  }
+  const codes = (data ?? []).map((r: any) => String(r.code ?? ""));
+  let maxN = 0;
+  for (const c of codes) {
+    if (!c.startsWith(prefix)) continue;
+    const rest = c.slice(prefix.length);
+    const m = rest.match(/^(\d{1,})$/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > maxN) maxN = n;
+    }
+  }
+  const next = maxN + 1;
+  const three = String(next).padStart(3, "0");
+  return `${prefix}${three}`;
+}
+
 
 /* -------------------- Datenfunktionen: BOM -------------------------------- */
 async function fetchBom(projectId: string): Promise<BomItem[]> {
@@ -259,7 +294,7 @@ export default function App() {
     <div className="min-h-dvh bg-slate-50 text-slate-900">
       <header className="sticky top-0 z-10 bg-white/75 backdrop-blur border-b border-slate-200">
         <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-          <h1 className="text-lg md:text-xl font-medium">Stellwag PM</h1>
+          <img src="/logo_small.png" alt="Stellwag Klimatechnik" className="h-6 md:h-8 w-auto" />
           <div className="text-sm text-slate-500">Projektmanagement</div>
         </div>
       </header>
@@ -287,21 +322,43 @@ export default function App() {
 }
 
 /* -------------------------- Startseite (re-ordered) ------------------------ */
+
 function HomeDashboard(props: { projects: Project[]; loading: boolean; onSelect: (id: string) => void; onCreated: (p: Project) => void }) {
   const { projects, loading, onSelect, onCreated } = props;
 
+  const [projTab, setProjTab] = useState<"active" | "archive">("active");
+  const isArchived = (status?: string | null) => {
+    const s = String(status ?? "").toLowerCase();
+    return s === "abgeschlossen" || s === "nicht beauftragt";
+  };
+  const activeProjects = projects.filter((p) => !isArchived(p.status));
+  const archivedProjects = projects.filter((p) => isArchived(p.status));
+
   return (
     <div className="space-y-8">
+      {/* Projekte mit Tabs */}
       <section>
-        <div className="mb-3 text-base text-slate-600">Aktuelle Projekte</div>
-        <ProjectsTable projects={projects} loading={loading} onSelect={onSelect} />
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-base text-slate-600">Projekte</div>
+          <div className="flex items-center gap-2">
+            <TabButton active={projTab === "active"} onClick={() => setProjTab("active")}>Aktive</TabButton>
+            <TabButton active={projTab === "archive"} onClick={() => setProjTab("archive")}>Archiv</TabButton>
+          </div>
+        </div>
+        <ProjectsTable
+          projects={projTab === "active" ? activeProjects : archivedProjects}
+          loading={loading}
+          onSelect={onSelect}
+        />
       </section>
 
+      {/* Neues Projekt anlegen */}
       <section>
         <div className="mb-3 text-base text-slate-600">Neues Projekt anlegen</div>
         <CreateProjectForm onCreated={onCreated} />
       </section>
 
+      {/* Fälligkeiten + Kalender */}
       <section className="grid gap-6 md:grid-cols-2">
         <DueWidget projects={projects} />
         <CalendarWidget />
@@ -309,6 +366,7 @@ function HomeDashboard(props: { projects: Project[]; loading: boolean; onSelect:
     </div>
   );
 }
+
 
 /* --------------------------- Projekte Tabelle ------------------------------ */
 function ProjectsTable(props: { projects: Project[]; loading: boolean; onSelect: (id: string) => void }) {
@@ -359,6 +417,22 @@ function ProjectsTable(props: { projects: Project[]; loading: boolean; onSelect:
 function CreateProjectForm(props: { onCreated: (p: Project) => void }) {
   const { onCreated } = props;
   const [form, setForm] = useState<NewProject>({ code: "", name: "", status: STATUS_OPTIONS[0], notes: "" });
+  // Auto-generate next project code on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const next = await getNextProjectCode();
+        if (!cancelled) {
+          setForm((s) => s.code ? s : { ...s, code: next });
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -372,7 +446,13 @@ function CreateProjectForm(props: { onCreated: (p: Project) => void }) {
       setSubmitting(true);
       const created = await insertProject(form);
       onCreated(created);
-      setForm({ code: "", name: "", status: STATUS_OPTIONS[0], notes: "" });
+      // Code direkt für das nächste Projekt vorschlagen
+  try {
+    const next = await getNextProjectCode();
+    setForm({ code: next, name: "", status: STATUS_OPTIONS[0], notes: "" });
+  } catch {
+    setForm({ code: "", name: "", status: STATUS_OPTIONS[0], notes: "" });
+  }
     } catch (e: any) {
       console.error(e);
       setErrorMsg(e?.message ?? "Konnte Projekt nicht anlegen.");
@@ -386,9 +466,29 @@ function CreateProjectForm(props: { onCreated: (p: Project) => void }) {
       {errorMsg && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{errorMsg}</div>}
 
       <div className="grid gap-3 md:grid-cols-2">
+        
         <Field label="Code">
-          <input className="rounded-xl border border-slate-300 px-3 py-2" value={form.code} onChange={(e) => setForm((s) => ({ ...s, code: e.target.value }))} required />
+          <div className="flex items-center gap-2">
+            <input
+              className="flex-1 rounded-xl border border-slate-300 px-3 py-2"
+              value={form.code}
+              onChange={(e) => setForm((s) => ({ ...s, code: e.target.value }))}
+              required
+            />
+            <button
+              type="button"
+              title="Automatisch vorschlagen"
+              className="rounded-xl border border-slate-300 px-2 py-2 text-sm"
+              onClick={async () => {
+                const next = await getNextProjectCode();
+                setForm((s) => ({ ...s, code: next }));
+              }}
+            >
+              ↻
+            </button>
+          </div>
         </Field>
+
         <Field label="Name">
           <input className="rounded-xl border border-slate-300 px-3 py-2" value={form.name} onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))} required />
         </Field>
