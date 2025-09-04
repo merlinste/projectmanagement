@@ -44,6 +44,9 @@ type BomItem = {
   unit_price_net: number | null;
   notes: string | null;
   created_at: string | null;
+  purchased: boolean | null;
+  installed: boolean | null;
+  invoiced: boolean | null;
 };
 
 type TimeEntry = {
@@ -198,7 +201,7 @@ async function fetchBom(projectId: string): Promise<BomItem[]> {
   if (error) throw error;
   return (data ?? []) as BomItem[];
 }
-async function addBomItem(projectId: string, position?: Partial<BomItem>): Promise<BomItem> {
+aasync function addBomItem(projectId: string, position?: Partial<BomItem>): Promise<BomItem> {
   const { data, error } = await supabase
     .from("bom_items")
     .insert({
@@ -208,6 +211,10 @@ async function addBomItem(projectId: string, position?: Partial<BomItem>): Promi
       qty: position?.qty ?? 1,
       unit_price_net: position?.unit_price_net ?? 0,
       notes: position?.notes ?? null,
+      // NEU:
+      purchased: position?.purchased ?? false,
+      installed: position?.installed ?? false,
+      invoiced: position?.invoiced ?? false,
     })
     .select("*")
     .single();
@@ -890,29 +897,55 @@ function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; refreshin
 }
 
 /* =============================== Stückliste =============================== */
-function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean; onChange: (items: BomItem[]) => void; onReload: () => void }) {
+function BomPanel(props: {
+  project: Project;
+  items: BomItem[];
+  loading: boolean;
+  onChange: (items: BomItem[]) => void;
+  onReload: () => void;
+}) {
   const { project, items, loading, onChange, onReload } = props;
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
   const total = items.reduce((s, it) => s + num(it.qty) * num(it.unit_price_net), 0);
 
   const create = async () => {
-    try { const created = await addBomItem(project.id, { item: "", qty: 1, unit_price_net: 0 }); onChange([...items, created]); }
-    catch (e: any) { setErrorMsg(e?.message ?? "Konnte Position nicht anlegen."); }
+    try {
+      const created = await addBomItem(project.id, { item: "", qty: 1, unit_price_net: 0 });
+      onChange([...items, created]);
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? "Konnte Position nicht anlegen.");
+    }
   };
 
   const patch = async (id: string, p: Partial<BomItem>) => {
-    const optimistic = items.map((x) => (x.id === id ? ({ ...x, ...p } as BomItem) : x)); onChange(optimistic);
-    try { const updated = await updateBomItem(id, p); onChange(items.map((x) => (x.id === id ? updated : x))); } catch { onReload(); }
+    const optimistic = items.map((x) => (x.id === id ? ({ ...x, ...p } as BomItem) : x));
+    onChange(optimistic);
+    try {
+      const updated = await updateBomItem(id, p);
+      onChange(items.map((x) => (x.id === id ? updated : x)));
+    } catch {
+      onReload();
+    }
   };
 
   const remove = async (id: string) => {
-    const optimistic = items.filter((x) => x.id !== id); onChange(optimistic);
-    try { await deleteBomItem(id); } catch { onReload(); }
+    const optimistic = items.filter((x) => x.id !== id);
+    onChange(optimistic);
+    try {
+      await deleteBomItem(id);
+    } catch {
+      onReload();
+    }
   };
 
   return (
     <div className="space-y-4">
-      {errorMsg && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{errorMsg}</div>}
+      {errorMsg && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {errorMsg}
+        </div>
+      )}
 
       <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
         <table className="w-full text-sm">
@@ -924,37 +957,101 @@ function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean;
               <th className="px-4 py-3 text-right">Menge</th>
               <th className="px-4 py-3 text-right">Einzelpreis (netto)</th>
               <th className="px-4 py-3 text-right">Summe</th>
+              {/* NEU: Status-Felder */}
+              <th className="px-2 py-3 text-center">Eingekauft</th>
+              <th className="px-2 py-3 text-center">Montiert</th>
+              <th className="px-2 py-3 text-center">Abgerechnet</th>
               <th className="px-4 py-3 text-right">Aktionen</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td className="px-4 py-3 text-slate-500" colSpan={7}>Lädt …</td></tr>
+              <tr>
+                <td className="px-4 py-3 text-slate-500" colSpan={10}>
+                  Lädt …
+                </td>
+              </tr>
             ) : items.length ? (
               items.map((it, idx) => {
                 const rowSum = num(it.qty) * num(it.unit_price_net);
                 return (
                   <tr key={it.id} className="border-t border-slate-100">
                     <td className="px-4 py-2">{idx + 1}</td>
-                    <td className="px-4 py-2"><input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.item ?? ""} onChange={(e) => patch(it.id, { item: e.target.value })} placeholder="Artikel / Leistung" /></td>
-                    <td className="px-4 py-2"><input className="w-full rounded-xl border border-slate-300 px-2 py-1" value={it.unit ?? ""} onChange={(e) => patch(it.id, { unit: e.target.value })} placeholder="Stk, m, h …" /></td>
-                    <td className="px-4 py-2 text-right"><NumberInput small value={num(it.qty)} onChange={(v) => patch(it.id, { qty: v })} /></td>
-                    <td className="px-4 py-2 text-right"><NumberInput small value={num(it.unit_price_net)} onChange={(v) => patch(it.id, { unit_price_net: v })} /></td>
+                    <td className="px-4 py-2">
+                      <input
+                        className="w-full rounded-xl border border-slate-300 px-2 py-1"
+                        value={it.item ?? ""}
+                        onChange={(e) => patch(it.id, { item: e.target.value })}
+                        placeholder="Artikel / Leistung"
+                      />
+                    </td>
+                    <td className="px-4 py-2">
+                      <input
+                        className="w-full rounded-xl border border-slate-300 px-2 py-1"
+                        value={it.unit ?? ""}
+                        onChange={(e) => patch(it.id, { unit: e.target.value })}
+                        placeholder="Stk, m, h …"
+                      />
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <NumberInput small value={num(it.qty)} onChange={(v) => patch(it.id, { qty: v })} />
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <NumberInput small value={num(it.unit_price_net)} onChange={(v) => patch(it.id, { unit_price_net: v })} />
+                    </td>
                     <td className="px-4 py-2 text-right">{money(rowSum)}</td>
-                    <td className="px-4 py-2 text-right"><button className="text-red-600 hover:underline" onClick={() => remove(it.id)}>löschen</button></td>
+
+                    {/* NEU: Checkboxen */}
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={!!it.purchased}
+                        onChange={(e) => patch(it.id, { purchased: e.target.checked })}
+                        title="Eingekauft"
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={!!it.installed}
+                        onChange={(e) => patch(it.id, { installed: e.target.checked })}
+                        title="Montiert"
+                      />
+                    </td>
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={!!it.invoiced}
+                        onChange={(e) => patch(it.id, { invoiced: e.target.checked })}
+                        title="Abgerechnet"
+                      />
+                    </td>
+
+                    <td className="px-4 py-2 text-right">
+                      <button className="text-red-600 hover:underline" onClick={() => remove(it.id)}>
+                        löschen
+                      </button>
+                    </td>
                   </tr>
                 );
               })
             ) : (
-              <tr><td className="px-4 py-3 text-slate-500" colSpan={7}>Keine Positionen angelegt.</td></tr>
+              <tr>
+                <td className="px-4 py-3 text-slate-500" colSpan={10}>
+                  Keine Positionen angelegt.
+                </td>
+              </tr>
             )}
           </tbody>
+
           {items.length > 0 && (
             <tfoot>
               <tr className="border-t border-slate-200 bg-slate-50">
-                <td className="px-4 py-2" colSpan={5}>Summe</td>
+                <td className="px-4 py-2" colSpan={5}>
+                  Summe
+                </td>
                 <td className="px-4 py-2 text-right">{money(total)}</td>
-                <td />
+                <td colSpan={4} />
               </tr>
             </tfoot>
           )}
@@ -962,8 +1059,12 @@ function BomPanel(props: { project: Project; items: BomItem[]; loading: boolean;
       </div>
 
       <div className="flex items-center gap-3">
-        <button className="rounded-xl bg-blue-600 px-3 py-2 text-white" onClick={create}>Position hinzufügen</button>
-        <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={onReload}>Aktualisieren</button>
+        <button className="rounded-xl bg-blue-600 px-3 py-2 text-white" onClick={create}>
+          Position hinzufügen
+        </button>
+        <button className="rounded-xl border border-slate-300 px-3 py-2" onClick={onReload}>
+          Aktualisieren
+        </button>
       </div>
     </div>
   );
