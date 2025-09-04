@@ -42,11 +42,15 @@ type BomItem = {
   unit: string | null;
   qty: number | null;
   unit_price_net: number | null;
+  ek_unit_price_net: number | null;
+  shipping_cost_net: number | null;
+  supplier: string | null;
+  purchased_at: string | null;
   notes: string | null;
-  created_at: string | null;
   purchased: boolean | null;
   installed: boolean | null;
   invoiced: boolean | null;
+  created_at: string | null;
 };
 
 type TimeEntry = {
@@ -176,6 +180,19 @@ const fromDatetimeLocalValue = (local: string) => {
   return d.toISOString(); // speichert in UTC, Anzeige erfolgt wieder lokal
 };
 
+const toDateInputValue = (iso?: string | null) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+const fromDateInputValue = (value: string) => {
+  // Mittagszeit vermeidet Zeitzonen-Verschiebung beim ISO-Export
+  return value ? new Date(`${value}T12:00:00`).toISOString() : null;
+};
+
 /* =========================== Datenfunktionen: Projekte ==================== */
 async function fetchProjects(): Promise<Project[]> {
   const { data, error } = await supabase.from("projects").select("*").order("created_at", { ascending: false });
@@ -201,7 +218,8 @@ async function fetchBom(projectId: string): Promise<BomItem[]> {
   if (error) throw error;
   return (data ?? []) as BomItem[];
 }
-aasync function addBomItem(projectId: string, position?: Partial<BomItem>): Promise<BomItem> {
+async function addBomItem(projectId: string, position?: Partial<BomItem>): Promise<BomItem> {
+  const ek = position?.ek_unit_price_net ?? position?.unit_price_net ?? 0; // Fallback: altes Feld
   const { data, error } = await supabase
     .from("bom_items")
     .insert({
@@ -209,9 +227,14 @@ aasync function addBomItem(projectId: string, position?: Partial<BomItem>): Prom
       item: position?.item ?? "",
       unit: position?.unit ?? null,
       qty: position?.qty ?? 1,
-      unit_price_net: position?.unit_price_net ?? 0,
+
+      unit_price_net: position?.unit_price_net ?? ek, // bleibt befüllt der Kompatibilität halber
+      ek_unit_price_net: ek,
+      shipping_cost_net: position?.shipping_cost_net ?? 0,
+      supplier: position?.supplier ?? null,
+      purchased_at: position?.purchased_at ?? null,
+
       notes: position?.notes ?? null,
-      // NEU:
       purchased: position?.purchased ?? false,
       installed: position?.installed ?? false,
       invoiced: position?.invoiced ?? false,
@@ -220,15 +243,6 @@ aasync function addBomItem(projectId: string, position?: Partial<BomItem>): Prom
     .single();
   if (error) throw error;
   return data as BomItem;
-}
-async function updateBomItem(id: string, patch: Partial<BomItem>): Promise<BomItem> {
-  const { data, error } = await supabase.from("bom_items").update(patch).eq("id", id).select("*").single();
-  if (error) throw error;
-  return data as BomItem;
-}
-async function deleteBomItem(id: string) {
-  const { error } = await supabase.from("bom_items").delete().eq("id", id);
-  if (error) throw error;
 }
 
 /* ======================= Datenfunktionen: Storage ========================= */
@@ -824,7 +838,17 @@ function ProfitabilityPanel(props: { project: Project; bom: BomItem[]; refreshin
     return () => { cancelled = true; };
   }, [project.id, project.hourly_rate]);
 
-  const bomTotal = useMemo(() => bom.reduce((s, it) => s + num(it.qty) * num(it.unit_price_net), 0), [bom]);
+  const bomTotal = useMemo(() => {
+      return bom.reduce((s, it) => {
+        // Bevorzugt EK; fällt zurück auf altes Feld unit_price_net
+        const unitCost = num(
+          (it.ek_unit_price_net ?? undefined) as any,
+          num(it.unit_price_net)
+        );
+        const shipping = num(it.shipping_cost_net);
+        return s + num(it.qty) * unitCost + shipping;
+      }, 0);
+    }, [bom]);
   const plannedCost   = num(fin.hours_planned) * num(fin.hourly_rate) + num(bomTotal) + num(fin.other_costs);
   const actualCost    = num(timeSum.cost) + num(bomTotal) + num(fin.other_costs);
   const plannedProfit = num(fin.quote_total_net) - plannedCost;
@@ -907,11 +931,15 @@ function BomPanel(props: {
   const { project, items, loading, onChange, onReload } = props;
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const total = items.reduce((s, it) => s + num(it.qty) * num(it.unit_price_net), 0);
+  const totalCost = items.reduce((s, it) => {
+    const unitCost = num(it.ek_unit_price_net ?? it.unit_price_net);
+    const shipping = num(it.shipping_cost_net);
+    return s + num(it.qty) * unitCost + shipping;
+  }, 0);
 
   const create = async () => {
     try {
-      const created = await addBomItem(project.id, { item: "", qty: 1, unit_price_net: 0 });
+      const created = await addBomItem(project.id, { item: "", qty: 1, ek_unit_price_net: 0, shipping_cost_net: 0 });
       onChange([...items, created]);
     } catch (e: any) {
       setErrorMsg(e?.message ?? "Konnte Position nicht anlegen.");
@@ -955,28 +983,38 @@ function BomPanel(props: {
               <th className="px-4 py-3 text-left">Bezeichnung</th>
               <th className="px-4 py-3 text-left">Einheit</th>
               <th className="px-4 py-3 text-right">Menge</th>
-              <th className="px-4 py-3 text-right">Einzelpreis (netto)</th>
-              <th className="px-4 py-3 text-right">Summe</th>
-              {/* NEU: Status-Felder */}
+
+              <th className="px-4 py-3 text-right">EK netto</th>
+              <th className="px-4 py-3 text-right">Versand</th>
+
+              <th className="px-4 py-3 text-left">Bezugsquelle</th>
+              <th className="px-4 py-3 text-left">Eingekauft am</th>
+
               <th className="px-2 py-3 text-center">Eingekauft</th>
               <th className="px-2 py-3 text-center">Montiert</th>
               <th className="px-2 py-3 text-center">Abgerechnet</th>
+
+              <th className="px-4 py-3 text-right">Summe</th>
               <th className="px-4 py-3 text-right">Aktionen</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-4 py-3 text-slate-500" colSpan={10}>
+                <td className="px-4 py-3 text-slate-500" colSpan={13}>
                   Lädt …
                 </td>
               </tr>
             ) : items.length ? (
               items.map((it, idx) => {
-                const rowSum = num(it.qty) * num(it.unit_price_net);
+                const unitCost = num(it.ek_unit_price_net ?? it.unit_price_net);
+                const shipping = num(it.shipping_cost_net);
+                const rowSum = num(it.qty) * unitCost + shipping;
+
                 return (
                   <tr key={it.id} className="border-t border-slate-100">
                     <td className="px-4 py-2">{idx + 1}</td>
+
                     <td className="px-4 py-2">
                       <input
                         className="w-full rounded-xl border border-slate-300 px-2 py-1"
@@ -985,6 +1023,7 @@ function BomPanel(props: {
                         placeholder="Artikel / Leistung"
                       />
                     </td>
+
                     <td className="px-4 py-2">
                       <input
                         className="w-full rounded-xl border border-slate-300 px-2 py-1"
@@ -993,20 +1032,54 @@ function BomPanel(props: {
                         placeholder="Stk, m, h …"
                       />
                     </td>
+
                     <td className="px-4 py-2 text-right">
                       <NumberInput small value={num(it.qty)} onChange={(v) => patch(it.id, { qty: v })} />
                     </td>
-                    <td className="px-4 py-2 text-right">
-                      <NumberInput small value={num(it.unit_price_net)} onChange={(v) => patch(it.id, { unit_price_net: v })} />
-                    </td>
-                    <td className="px-4 py-2 text-right">{money(rowSum)}</td>
 
-                    {/* NEU: Checkboxen */}
+                    {/* EK & Versand */}
+                    <td className="px-4 py-2 text-right">
+                      <NumberInput
+                        small
+                        value={num(it.ek_unit_price_net ?? it.unit_price_net)}
+                        onChange={(v) => patch(it.id, { ek_unit_price_net: v })}
+                      />
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <NumberInput small value={num(it.shipping_cost_net)} onChange={(v) => patch(it.id, { shipping_cost_net: v })} />
+                    </td>
+
+                    {/* Bezugsquelle & gekauft am */}
+                    <td className="px-4 py-2">
+                      <input
+                        className="w-full rounded-xl border border-slate-300 px-2 py-1"
+                        value={it.supplier ?? ""}
+                        onChange={(e) => patch(it.id, { supplier: e.target.value })}
+                        placeholder="z. B. Großhändler X"
+                      />
+                    </td>
+                    <td className="px-4 py-2">
+                      <input
+                        type="date"
+                        className="rounded-xl border border-slate-300 px-2 py-1"
+                        value={toDateInputValue(it.purchased_at)}
+                        onChange={(e) => patch(it.id, { purchased_at: fromDateInputValue(e.target.value) })}
+                      />
+                    </td>
+
+                    {/* Checkboxen */}
                     <td className="px-2 py-2 text-center">
                       <input
                         type="checkbox"
                         checked={!!it.purchased}
-                        onChange={(e) => patch(it.id, { purchased: e.target.checked })}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          const patchObj: Partial<BomItem> = { purchased: checked };
+                          // Datum automatisch setzen/entfernen
+                          if (checked && !it.purchased_at) patchObj.purchased_at = new Date().toISOString();
+                          if (!checked) patchObj.purchased_at = null;
+                          patch(it.id, patchObj);
+                        }}
                         title="Eingekauft"
                       />
                     </td>
@@ -1027,6 +1100,8 @@ function BomPanel(props: {
                       />
                     </td>
 
+                    <td className="px-4 py-2 text-right">{money(rowSum)}</td>
+
                     <td className="px-4 py-2 text-right">
                       <button className="text-red-600 hover:underline" onClick={() => remove(it.id)}>
                         löschen
@@ -1037,21 +1112,20 @@ function BomPanel(props: {
               })
             ) : (
               <tr>
-                <td className="px-4 py-3 text-slate-500" colSpan={10}>
+                <td className="px-4 py-3 text-slate-500" colSpan={13}>
                   Keine Positionen angelegt.
                 </td>
               </tr>
             )}
           </tbody>
-
           {items.length > 0 && (
             <tfoot>
               <tr className="border-t border-slate-200 bg-slate-50">
-                <td className="px-4 py-2" colSpan={5}>
-                  Summe
+                <td className="px-4 py-2" colSpan={11}>
+                  Summe (EK × Menge + Versand)
                 </td>
-                <td className="px-4 py-2 text-right">{money(total)}</td>
-                <td colSpan={4} />
+                <td className="px-4 py-2 text-right">{money(totalCost)}</td>
+                <td />
               </tr>
             </tfoot>
           )}
@@ -1503,7 +1577,8 @@ function QuotePanel(props: { project: Project; onProjectUpdated: (p: Project) =>
           item: it.item,
           unit: it.unit,
           qty: num(it.qty),
-          unit_price_net: unitPriceAfterDiscount,
+          ek_unit_price_net: num(it.unit_price_net) * (1 - num(it.discount_pct) / 100), // <- EK
+          shipping_cost_net: 0,
           notes: it.description ?? null,
         });
       }
